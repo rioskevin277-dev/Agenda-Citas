@@ -87,7 +87,7 @@ echo "   y completa las claves de OpenAI, WhatsApp, etc."
 
 # ─── 8. Clonar código ──────────────────────
 echo "📥 Clonando repositorio..."
-git clone https://github.com/TU_USUARIO/agenda-api.git /tmp/agenda-repo
+git clone https://github.com/rioskevin277-dev/Agenda-Citas.git /tmp/agenda-repo
 cp /tmp/agenda-repo/Dockerfile /opt/agenda-api/
 cp /tmp/agenda-repo/docker-compose.yml /opt/agenda-api/
 rm -rf /tmp/agenda-repo
