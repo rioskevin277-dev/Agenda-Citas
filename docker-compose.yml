@@ -1,0 +1,66 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: agenda-sqlserver
+    restart: always
+    environment:
+      - ACCEPT_EULA=Y
+      - MSSQL_SA_PASSWORD=${SQL_PASSWORD:-AgendaApi_Prod_ChangeMe!}
+      - MSSQL_PID=Express
+    ports:
+      - "127.0.0.1:1433:1433"
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+    networks:
+      - agenda-net
+    healthcheck:
+      test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "${SQL_PASSWORD:-AgendaApi_Prod_ChangeMe!}" -C -Q "SELECT 1" || exit 1
+      interval: 10s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agenda-api
+    restart: always
+    expose:
+      - "8080"
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    environment:
+      - ConnectionStrings__AgendaDb=Server=sqlserver;Database=AgendaApi;User Id=sa;Password=${SQL_PASSWORD:-AgendaApi_Prod_ChangeMe!};TrustServerCertificate=True;MultipleActiveResultSets=true
+      - TokenEncryption__MasterKey=${MASTER_KEY}
+      - Jwt__Secret=${JWT_SECRET}
+      - OpenAI__ApiKey=${OPENAI_API_KEY}
+      - Anthropic__ApiKey=${ANTHROPIC_API_KEY}
+      - WhatsApp__AccessToken=${WHATSAPP_ACCESS_TOKEN}
+      - WhatsApp__PhoneNumberId=${WHATSAPP_PHONE_NUMBER_ID}
+      - WhatsApp__VerifyToken=${WHATSAPP_VERIFY_TOKEN}
+      - GoogleOAuth__ClientId=${GOOGLE_OAUTH_CLIENT_ID}
+      - GoogleOAuth__ClientSecret=${GOOGLE_OAUTH_CLIENT_SECRET}
+      - MicrosoftOAuth__ClientId=${MS_OAUTH_CLIENT_ID}
+      - MicrosoftOAuth__ClientSecret=${MS_OAUTH_CLIENT_SECRET}
+      - ASPNETCORE_URLS=http://+:8080
+      - ASPNETCORE_ENVIRONMENT=Production
+    networks:
+      - agenda-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+volumes:
+  sqlserver-data:
+
+networks:
+  agenda-net:
+    driver: bridge

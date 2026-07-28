@@ -1,0 +1,92 @@
+using AgendaApi.Domain.Entities;
+using AgendaApi.Domain.Ports;
+using AgendaApi.Infrastructure.AiProviders;
+using AgendaApi.Infrastructure.CalendarProviders;
+using AgendaApi.Infrastructure.Data;
+using AgendaApi.Infrastructure.Messaging;
+using AgendaApi.Infrastructure.Middleware;
+using AgendaApi.Infrastructure.Repositories;
+using AgendaApi.Infrastructure.Services;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace AgendaApi.Infrastructure;
+
+public static class DependencyInjection
+{
+    public static IServiceCollection AddInfrastructureLayer(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        // Database
+        var connectionString = configuration.GetConnectionString("AgendaDb");
+        services.AddDbContext<AgendaDbContext>(options =>
+            options.UseSqlServer(connectionString, sqlOptions =>
+            {
+                sqlOptions.EnableRetryOnFailure(3);
+            }));
+
+        // Unit of Work
+        services.AddScoped<IUnitOfWork, UnitOfWork>();
+
+        // Repositories
+        services.AddScoped<ITenantRepository, TenantRepository>();
+        services.AddScoped<ICalendarConnectionRepository, CalendarConnectionRepository>();
+        services.AddScoped<IAppointmentRepository, AppointmentRepository>();
+        services.AddScoped<IClientRepository, ClientRepository>();
+        services.AddScoped<IServiceTypeRepository, ServiceTypeRepository>();
+        services.AddScoped<IAvailabilityRepository, AvailabilityRepository>();
+
+        // Tenant Context (scoped)
+        services.AddScoped<ITenantContext, TenantContext>();
+
+        // Token Encryption
+        services.AddSingleton<ITokenEncryptionService, TokenEncryptionService>();
+
+        // Calendar Providers (with IHttpClientFactory)
+        services.AddHttpClient<GoogleCalendarAdapter>("google-calendar", client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
+        services.AddHttpClient<MicrosoftGraphCalendarAdapter>("microsoft-graph", client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
+
+        services.AddScoped<ICalendarProvider, GoogleCalendarAdapter>(sp =>
+            sp.GetRequiredService<GoogleCalendarAdapter>());
+        services.AddScoped<ICalendarProvider, MicrosoftGraphCalendarAdapter>(sp =>
+            sp.GetRequiredService<MicrosoftGraphCalendarAdapter>());
+        services.AddScoped<ICalendarProviderFactory, CalendarProviderFactory>();
+
+        // AI Providers
+        services.AddHttpClient<OpenAIProvider>("openai-api", client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(60);
+            client.DefaultRequestHeaders.Add("User-Agent", "AgendaApi/1.0");
+        });
+
+        services.AddHttpClient<AnthropicProvider>("anthropic-api", client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(60);
+            client.DefaultRequestHeaders.Add("User-Agent", "AgendaApi/1.0");
+        });
+
+        // WhatsApp Provider
+        services.AddHttpClient<WhatsAppCloudApiAdapter>("whatsapp-api", client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(30);
+            client.DefaultRequestHeaders.Add("User-Agent", "AgendaApi/1.0");
+        });
+
+        services.AddScoped<IMessagingProvider, WhatsAppCloudApiAdapter>();
+
+        // Message Buffer + Chat Orchestrator
+        services.AddSingleton<MessageBufferService>();
+        services.AddHostedService<MessageBufferService>(sp => sp.GetRequiredService<MessageBufferService>());
+        services.AddScoped<ChatOrchestratorService>();
+
+        return services;
+    }
+}
