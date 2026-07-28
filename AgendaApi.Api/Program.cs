@@ -2,6 +2,7 @@ using System.Text;
 using AgendaApi.Api.Middleware;
 using AgendaApi.Application;
 using AgendaApi.Infrastructure;
+using Microsoft.EntityFrameworkCore;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -68,6 +69,14 @@ var app = builder.Build();
 // Middleware pipeline
 app.UseSwagger();
 app.UseSwaggerUI();
+
+// Auto-migrate on startup
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AgendaApi.Infrastructure.Data.AgendaDbContext>();
+    db.Database.Migrate();
+    Log.Information("[AgendaApi] Migraciones aplicadas correctamente");
+}
 
 app.UseAuthentication();
 app.UseAuthorization();

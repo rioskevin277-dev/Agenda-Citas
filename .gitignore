@@ -46,3 +46,7 @@ Thumbs.db
 # Environment
 .env
 *.env.local
+
+# Local publish (Docker build)
+publish_local/
+*.output

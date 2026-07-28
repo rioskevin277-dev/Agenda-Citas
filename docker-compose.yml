@@ -30,8 +30,8 @@ services:
       dockerfile: Dockerfile
     container_name: agenda-api
     restart: always
-    expose:
-      - "8080"
+    ports:
+      - "127.0.0.1:8080:8080"
     depends_on:
       sqlserver:
         condition: service_healthy
