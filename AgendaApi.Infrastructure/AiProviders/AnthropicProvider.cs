@@ -3,24 +3,29 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AgendaApi.Domain.Ports;
+using Microsoft.Extensions.Logging;
 
 namespace AgendaApi.Infrastructure.AiProviders;
 
 /// <summary>
-/// Adaptador para Anthropic Claude API (claude-3-haiku). Usado como fallback cuando OpenAI falla.
+/// Adaptador para Anthropic Claude API (claude-haiku-4-5). Usado como fallback cuando OpenAI falla.
 /// Mismo patrón que AdamApi. Convierte el formato de tool-calling de Anthropic al formato unificado.
 /// </summary>
 public class AnthropicProvider : IAiProvider
 {
     private readonly HttpClient _httpClient;
     private readonly string? _fallbackApiKey;
+    private readonly ILogger<AnthropicProvider> _logger;
     private const string ApiUrl = "https://api.anthropic.com/v1/messages";
-    private const string Model = "claude-3-haiku-20240307";
+    private const string Model = "claude-haiku-4-5-20251001";
 
-    public AnthropicProvider(IHttpClientFactory httpClientFactory)
+    public AnthropicProvider(
+        IHttpClientFactory httpClientFactory,
+        ILogger<AnthropicProvider> logger)
     {
         _httpClient = httpClientFactory.CreateClient("anthropic-api");
         _fallbackApiKey = Environment.GetEnvironmentVariable("Anthropic__ApiKey");
+        _logger = logger;
     }
 
     public async Task<string> GenerateResponseAsync(
@@ -55,7 +60,7 @@ public class AnthropicProvider : IAiProvider
 
         if (!response.IsSuccessStatusCode)
         {
-            Console.WriteLine($"[Anthropic] ERROR: {response.StatusCode} - {json}");
+            _logger.LogError("[Anthropic] Error en GenerateResponseAsync: {StatusCode} - {Response}", response.StatusCode, json);
             throw new Exception($"Anthropic API error: {response.StatusCode}");
         }
 
@@ -102,14 +107,14 @@ public class AnthropicProvider : IAiProvider
             Encoding.UTF8,
             "application/json");
 
-        Console.WriteLine($"[Anthropic] GenerarRespuestaConTools — messages={nonSystemMessages.Count} tools={tools.Count}");
+        _logger.LogDebug("[Anthropic] GenerateResponseWithTools: messages={MsgCount} tools={ToolCount}", nonSystemMessages.Count, tools.Count);
 
         var response = await _httpClient.SendAsync(request, ct);
         var json = await response.Content.ReadAsStringAsync(ct);
 
         if (!response.IsSuccessStatusCode)
         {
-            Console.WriteLine($"[Anthropic] ERROR: {response.StatusCode} - {json}");
+            _logger.LogError("[Anthropic] Error en GenerateResponseAsync: {StatusCode} - {Response}", response.StatusCode, json);
             return new AiToolCallResult { Success = false, TextContent = $"Error Anthropic: {response.StatusCode}" };
         }
 
@@ -157,7 +162,7 @@ public class AnthropicProvider : IAiProvider
     {
         if (!string.IsNullOrWhiteSpace(_fallbackApiKey))
         {
-            Console.WriteLine("[Anthropic] Usando API Key de configuración");
+            _logger.LogDebug("[Anthropic] Usando API Key de configuración global");
             return _fallbackApiKey;
         }
 

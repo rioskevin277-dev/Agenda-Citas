@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AgendaApi.Domain.Ports;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AgendaApi.Api.Controllers.OAuth;
@@ -9,7 +10,8 @@ namespace AgendaApi.Api.Controllers.OAuth;
 /// Inicia la autorización y recibe el callback con el código de autorización.
 /// </summary>
 [ApiController]
-[Route("api/oauth/google")]
+[Route("api/v1/oauth/google")]
+[AllowAnonymous]
 public class GoogleOAuthController : ControllerBase
 {
     private readonly ITenantRepository _tenantRepo;

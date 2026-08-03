@@ -36,7 +36,15 @@ public class ChatOrchestratorService
         var messaging = services.GetRequiredService<IMessagingProvider>();
         var tenantContext = services.GetRequiredService<ITenantContext>();
 
-        tenantContext.SetTenant(tenantId, "google", "", "");
+        // Cargar datos reales del tenant desde la BD
+        var tenantRepo = services.GetRequiredService<ITenantRepository>();
+        var tenant = await tenantRepo.GetByIdAsync(tenantId, ct);
+
+        tenantContext.SetTenant(
+            tenantId,
+            calendarProvider: tenant?.CalendarProvider ?? "google",
+            whatsAppAccessToken: Environment.GetEnvironmentVariable("WhatsApp__AccessToken") ?? Environment.GetEnvironmentVariable("WHATSAPP_ACCESS_TOKEN") ?? "",
+            phoneNumberId: tenant?.WhatsAppPhoneNumberId ?? "");
 
         _logger.LogInformation("[Orchestrator] Procesando mensaje de {Phone} para tenant {Tenant}",
             userPhone, tenantId);

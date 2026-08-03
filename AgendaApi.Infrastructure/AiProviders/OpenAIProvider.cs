@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AgendaApi.Domain.Ports;
+using Microsoft.Extensions.Logging;
 
 namespace AgendaApi.Infrastructure.AiProviders;
 
@@ -14,15 +15,18 @@ public class OpenAIProvider : IAiProvider
 {
     private readonly HttpClient _httpClient;
     private readonly ITenantContext _tenantContext;
+    private readonly ILogger<OpenAIProvider> _logger;
     private const string ApiUrl = "https://api.openai.com/v1/chat/completions";
     private const string Model = "gpt-4o-mini";
 
     public OpenAIProvider(
         IHttpClientFactory httpClientFactory,
-        ITenantContext tenantContext)
+        ITenantContext tenantContext,
+        ILogger<OpenAIProvider> logger)
     {
         _httpClient = httpClientFactory.CreateClient("openai-api");
         _tenantContext = tenantContext;
+        _logger = logger;
     }
 
     public async Task<string> GenerateResponseAsync(
@@ -53,7 +57,7 @@ public class OpenAIProvider : IAiProvider
 
         if (!response.IsSuccessStatusCode)
         {
-            Console.WriteLine($"[OpenAI] ERROR: {response.StatusCode} - {json}");
+            _logger.LogError("[OpenAI] Error en API: {StatusCode} - {Response}", response.StatusCode, json);
             throw new Exception($"OpenAI API error: {response.StatusCode}");
         }
 
@@ -93,7 +97,7 @@ public class OpenAIProvider : IAiProvider
 
         if (!response.IsSuccessStatusCode)
         {
-            Console.WriteLine($"[OpenAI] ERROR: {response.StatusCode} - {json}");
+            _logger.LogError("[OpenAI] Error en API: {StatusCode} - {Response}", response.StatusCode, json);
             return new AiToolCallResult { Success = false, TextContent = $"Error: {response.StatusCode}" };
         }
 
@@ -136,7 +140,7 @@ public class OpenAIProvider : IAiProvider
             // In AgendaApi, we use a dedicated field; for now use WhatsAppAccessToken as API key
             // or fetch from tenant-specific config
             // TODO: Store OpenAI key per tenant properly
-            Console.WriteLine($"[OpenAI] Usando API Key del tenant: {_tenantContext.TenantId}");
+            _logger.LogWarning("[OpenAI] Tenant {TenantId} no tiene API key propia, usando global", _tenantContext.TenantId);
         }
 
         // Fallback: read from config (set via environment variable or appsettings)

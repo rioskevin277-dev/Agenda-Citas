@@ -1,5 +1,6 @@
 using AgendaApi.Application.DTOs;
 using AgendaApi.Domain.Ports;
+using Microsoft.Extensions.Logging;
 
 namespace AgendaApi.Application.UseCases;
 
@@ -16,6 +17,7 @@ public class RescheduleAppointmentUseCase
     private readonly IClientRepository _clientRepo;
     private readonly IMessagingProvider _messagingProvider;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly ILogger<RescheduleAppointmentUseCase> _logger;
 
     public RescheduleAppointmentUseCase(
         IAppointmentRepository appointmentRepo,
@@ -24,7 +26,8 @@ public class RescheduleAppointmentUseCase
         ICalendarProviderFactory providerFactory,
         IClientRepository clientRepo,
         IMessagingProvider messagingProvider,
-        IUnitOfWork unitOfWork)
+        IUnitOfWork unitOfWork,
+        ILogger<RescheduleAppointmentUseCase> logger)
     {
         _appointmentRepo = appointmentRepo;
         _serviceTypeRepo = serviceTypeRepo;
@@ -33,6 +36,7 @@ public class RescheduleAppointmentUseCase
         _clientRepo = clientRepo;
         _messagingProvider = messagingProvider;
         _unitOfWork = unitOfWork;
+        _logger = logger;
     }
 
     public async Task<AppointmentResponseDto?> ExecuteAsync(AppointmentRescheduleDto dto, CancellationToken ct = default)
@@ -93,7 +97,10 @@ public class RescheduleAppointmentUseCase
                     ct);
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[RescheduleAppointment] No se pudo notificar al cliente por WhatsApp: {Message}", ex.Message);
+        }
 
         return new AppointmentResponseDto
         {

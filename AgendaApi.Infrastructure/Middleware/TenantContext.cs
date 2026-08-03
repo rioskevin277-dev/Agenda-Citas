@@ -1,4 +1,5 @@
 using AgendaApi.Domain.Ports;
+using Microsoft.Extensions.Logging;
 
 namespace AgendaApi.Infrastructure.Middleware;
 
@@ -12,6 +13,12 @@ public class TenantContext : ITenantContext
     private string? _whatsAppAccessToken;
     private string? _phoneNumberId;
     private bool _isSet;
+    private readonly ILogger<TenantContext> _logger;
+
+    public TenantContext(ILogger<TenantContext> logger)
+    {
+        _logger = logger;
+    }
 
     public Guid TenantId => _isSet ? _tenantId : throw new InvalidOperationException("Tenant no establecido");
     public string? CalendarProvider => _isSet ? _calendarProvider : throw new InvalidOperationException("Tenant no establecido");
@@ -27,6 +34,6 @@ public class TenantContext : ITenantContext
         _phoneNumberId = phoneNumberId;
         _isSet = true;
 
-        Console.WriteLine($"[TenantContext] Tenant establecido: {tenantId} ({calendarProvider})");
+        _logger.LogDebug("[TenantContext] Tenant establecido: {TenantId} ({CalendarProvider})", tenantId, calendarProvider);
     }
 }

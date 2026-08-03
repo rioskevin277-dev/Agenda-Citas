@@ -4,13 +4,112 @@ Agente conversacional multi-tenant que agenda citas en calendario a través de *
 
 ---
 
+## ⚡ Inicio Rápido (Desarrollo Local)
+
+Solo necesitas **un archivo `.env`** y **.NET 8 SDK**.
+
+### 1. Clonar
+
+```bash
+git clone https://github.com/rioskevin277-dev/Agenda-Citas.git
+cd agenda-api
+```
+
+### 2. Configurar (un solo `.env`)
+
+Edita `C:\Users\USUARIO\agenda-api\.env` con tus datos:
+
+| Variable | Obligatorio | Dónde obtenerla |
+|---|---|---|
+| `OPENAI_API_KEY` | ✅ Sí | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
+| `ConnectionStrings__AgendaDb` | ✅ Sí | Cadena de conexión a SQL Server (ver abajo) |
+| `JWT_SECRET` | ✅ Sí | Cualquier texto de ≥32 caracteres |
+| `MASTER_KEY` | ✅ Sí | `openssl rand -base64 32` o usa la que viene por defecto |
+| `ANTHROPIC_API_KEY` | ❌ No | Fallback si OpenAI falla |
+| `WHATSAPP_*` | ❌ No | Solo para probar webhooks reales |
+
+> **SQL Server**: Puedes usar Docker (`docker compose up -d sqlserver`) o una instalación local.
+> Para SQL Server local con autenticación de Windows, cambia la línea en `.env`:
+> ```env
+> ConnectionStrings__AgendaDb=Server=localhost;Database=AgendaApi;Trusted_Connection=True;TrustServerCertificate=True;MultipleActiveResultSets=true
+> ```
+
+### 3. Iniciar
+
+```powershell
+# Opción recomendada — carga .env y corre todo:
+.\run.ps1
+
+# O manualmente:
+$env:ASPNETCORE_ENVIRONMENT = "Development"
+dotnet run --project AgendaApi.Api
+```
+
+La API arranca en `http://localhost:5000` — **solo local, sin exponer nada**.
+
+```
+📄 Cargando .env...
+   ✅ 20 variables cargadas
+📦 Restaurando paquetes...
+📦 Aplicando migraciones...
+═══════════════════════════════════════════
+   🚀 Iniciando AgendaApi...
+═══════════════════════════════════════════
+   Swagger:  http://localhost:5000/swagger
+   Health:   http://localhost:5000/health
+```
+
+---
+
+## 🧪 Cómo Probar
+
+### Health check
+
+```powershell
+curl.exe http://localhost:5000/health
+# → {"status":"healthy","timestamp":"...}
+```
+
+### Swagger (navegador)
+
+Abrir `http://localhost:5000/swagger` — documentación interactiva de todos los endpoints.
+
+### Crear un tenant de prueba
+
+```powershell
+curl.exe -X POST http://localhost:5000/api/tenants `
+  -H "Content-Type: application/json" `
+  -d '{"nombre":"Peluquería Canina Test","calendarProvider":"google"}'
+```
+
+### Listar tenants
+
+```powershell
+curl.exe http://localhost:5000/api/tenants
+```
+
+### Simular un webhook de WhatsApp (sin WhatsApp real)
+
+```powershell
+.\scripts\test-webhook.ps1 -Message "Quiero agendar una cita"
+```
+
+### Flujo completo automatizado
+
+```powershell
+.\scripts\test-full-flow.ps1
+```
+
+Crea un tenant, agrega un servicio, simula un webhook y muestra los resultados.
+
+---
+
 ## 🌐 Producción
 
 | Dato | Valor |
 |---|---|
 | **URL** | `https://api.adamcoia.com` |
 | **Swagger** | `https://api.adamcoia.com/swagger` |
-| **Health** | `https://api.adamcoia.com/health` |
 | **Servidor** | PC local (Windows 11 Home) |
 | **Virtualización** | WSL2 + Ubuntu 24.04 |
 | **Contenedores** | Docker Desktop |
@@ -20,10 +119,25 @@ Agente conversacional multi-tenant que agenda citas en calendario a través de *
 | **Repositorio** | [github.com/rioskevin277-dev/Agenda-Citas](https://github.com/rioskevin277-dev/Agenda-Citas) |
 
 ### ¿Cómo funciona?
+
 ```
-Usuario WhatsApp → Meta → https://api.adamcoia.com → Cloudflare Tunnel → localhost:8080 → API .NET
+Usuario WhatsApp → Meta → api.adamcoia.com → Cloudflare Tunnel → localhost:8080 → API .NET
 ```
+
 Sin IP pública, sin abrir puertos, 100% gratis.
+
+### Iniciar producción
+
+```powershell
+.\scripts\start-production.ps1
+```
+
+O manualmente desde WSL:
+```bash
+cd /mnt/c/Users/USUARIO/agenda-api
+docker compose up -d
+cloudflared tunnel run agenda-api
+```
 
 ---
 
@@ -62,40 +176,6 @@ Sin IP pública, sin abrir puertos, 100% gratis.
 
 ---
 
-## 🚀 Primeros Pasos (Local)
-
-```bash
-# 1. Clonar
-git clone https://github.com/rioskevin277-dev/Agenda-Citas.git
-cd agenda-api
-
-# 2. Restaurar
-dotnet restore
-
-# 3. Configurar variables de entorno (ver abajo)
-
-# 4. Migraciones
-dotnet ef database update --project AgendaApi.Infrastructure --startup-project AgendaApi.Api
-
-# 5. Correr
-dotnet run --project AgendaApi.Api
-# → http://localhost:5000/swagger
-```
-
-### Variables de Entorno
-
-| Variable | ¿Qué es? |
-|---|---|
-| `ConnectionStrings__AgendaDb` | Conexión a SQL Server |
-| `Jwt__Secret` | Clave JWT (mín. 32 caracteres) |
-| `OpenAI__ApiKey` | API Key de OpenAI |
-| `TokenEncryption__MasterKey` | Clave AES-256 en Base64 (generar con `openssl rand -base64 32`) |
-| `WhatsApp__AccessToken` | Token de WhatsApp Cloud API |
-| `WhatsApp__PhoneNumberId` | ID del número de WhatsApp |
-| `WhatsApp__VerifyToken` | Token de verificación del webhook |
-
----
-
 ## 📋 Endpoints Principales
 
 | Método | Ruta | Descripción |
@@ -113,23 +193,6 @@ dotnet run --project AgendaApi.Api
 
 ---
 
-## 🐳 Producción (Docker)
-
-Para levantar en producción local:
-
-```powershell
-.\scripts\start-production.ps1
-```
-
-O manualmente desde WSL Ubuntu:
-```bash
-cd /mnt/c/Users/USUARIO/agenda-api
-docker compose up -d
-cloudflared tunnel run agenda-api
-```
-
----
-
 ## 📦 Estructura del Proyecto
 
 ```
@@ -141,7 +204,9 @@ AgendaApi.sln
 ├── AgendaApi.Tests/           # Tests unitarios
 ├── deploy/                    # Scripts de deploy
 ├── scripts/                   # Scripts de utilidad
-└── docker-compose.yml         # Orquestación Docker
+├── docker-compose.yml         # Orquestación Docker
+├── run.ps1                    # Inicio local (carga .env + dotnet run)
+└── .env                       # Único archivo de configuración
 ```
 
 ---
@@ -151,4 +216,6 @@ AgendaApi.sln
 - **Multi-tenant**: Un solo schema, `id_tenant` GUID en cada tabla
 - **Cifrado**: Tokens OAuth cifrados con AES-256-GCM
 - **Rate limiting**: Buffer de 30s por usuario + dedup de mensajes
-- **Webhook WhatsApp**: Verificación mediante `WhatsApp__VerifyToken`
+- **Webhook WhatsApp**: Verificación mediante `WHATSAPP_VERIFY_TOKEN`
+- **Configuración**: Todo en un solo `.env` — compatible con Docker y desarrollo local
+- **Sin exponer**: Por defecto solo escucha en `localhost` — ningún endpoint es público

@@ -1,6 +1,7 @@
 using System.Net.Http;
 using System.Text.Json;
 using AgendaApi.Domain.Ports;
+using Microsoft.Extensions.Logging;
 
 namespace AgendaApi.Infrastructure.Messaging;
 
@@ -13,13 +14,16 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
 {
     private readonly HttpClient _httpClient;
     private readonly ITenantContext _tenantContext;
+    private readonly ILogger<WhatsAppCloudApiAdapter> _logger;
 
     public WhatsAppCloudApiAdapter(
         IHttpClientFactory httpClientFactory,
-        ITenantContext tenantContext)
+        ITenantContext tenantContext,
+        ILogger<WhatsAppCloudApiAdapter> logger)
     {
         _httpClient = httpClientFactory.CreateClient("whatsapp-api");
         _tenantContext = tenantContext;
+        _logger = logger;
     }
 
     public async Task SendTextAsync(string to, string message, CancellationToken ct = default)
@@ -105,7 +109,9 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
 
     public Task<string?> VerifyWebhookAsync(string mode, string token, string challenge)
     {
-        const string verifyToken = "agenda_api_verify_token_2024";
+        var verifyToken = Environment.GetEnvironmentVariable("WhatsApp__VerifyToken")
+                       ?? Environment.GetEnvironmentVariable("WHATSAPP_VERIFY_TOKEN")
+                       ?? "agenda_api_prod_2024";
 
         if (mode == "subscribe" && token == verifyToken)
             return Task.FromResult<string?>(challenge);
@@ -159,7 +165,7 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
         }
         catch (Exception ex)
         {
-            System.Console.WriteLine($"[WhatsAppAdapter] Error parseando webhook: {ex.Message}");
+            _logger.LogWarning(ex, "[WhatsAppAdapter] Error parseando webhook: {Message}", ex.Message);
         }
 
         return Task.FromResult(result);

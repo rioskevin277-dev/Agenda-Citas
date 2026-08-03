@@ -1,6 +1,7 @@
 using AgendaApi.Application.DTOs;
 using AgendaApi.Domain.Entities;
 using AgendaApi.Domain.Ports;
+using Microsoft.Extensions.Logging;
 
 namespace AgendaApi.Application.UseCases;
 
@@ -16,19 +17,22 @@ public class CheckAvailabilityUseCase
     private readonly ICalendarConnectionRepository _connectionRepo;
     private readonly ICalendarProviderFactory _providerFactory;
     private readonly IServiceTypeRepository _serviceTypeRepo;
+    private readonly ILogger<CheckAvailabilityUseCase> _logger;
 
     public CheckAvailabilityUseCase(
         IAvailabilityRepository availabilityRepo,
         IAppointmentRepository appointmentRepo,
         ICalendarConnectionRepository connectionRepo,
         ICalendarProviderFactory providerFactory,
-        IServiceTypeRepository serviceTypeRepo)
+        IServiceTypeRepository serviceTypeRepo,
+        ILogger<CheckAvailabilityUseCase> logger)
     {
         _availabilityRepo = availabilityRepo;
         _appointmentRepo = appointmentRepo;
         _connectionRepo = connectionRepo;
         _providerFactory = providerFactory;
         _serviceTypeRepo = serviceTypeRepo;
+        _logger = logger;
     }
 
     public async Task<List<TimeSlotDto>> ExecuteAsync(AvailabilityQueryDto query, CancellationToken ct = default)
@@ -97,9 +101,9 @@ public class CheckAvailabilityUseCase
                     }).ToList());
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // If external calendar is unreachable, rely on local data
+                _logger.LogWarning(ex, "[CheckAvailability] Calendario externo no disponible para tenant {TenantId}, usando datos locales", query.TenantId);
             }
         }
 

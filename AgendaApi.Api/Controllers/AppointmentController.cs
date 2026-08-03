@@ -1,12 +1,14 @@
 using AgendaApi.Application.DTOs;
 using AgendaApi.Application.UseCases;
 using AgendaApi.Domain.Ports;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AgendaApi.Api.Controllers;
 
 [ApiController]
-[Route("api/appointments")]
+[Authorize]
+[Route("api/v1/appointments")]
 public class AppointmentController : ControllerBase
 {
     private readonly CreateAppointmentUseCase _createUseCase;

@@ -1,10 +1,12 @@
 using AgendaApi.Domain.Ports;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AgendaApi.Api.Controllers;
 
 [ApiController]
-[Route("api/tenants")]
+[Authorize]
+[Route("api/v1/tenants")]
 public class TenantController : ControllerBase
 {
     private readonly ITenantRepository _tenantRepo;

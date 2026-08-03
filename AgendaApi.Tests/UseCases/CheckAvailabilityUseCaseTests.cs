@@ -3,6 +3,7 @@ using AgendaApi.Application.UseCases;
 using AgendaApi.Domain.Entities;
 using AgendaApi.Domain.Ports;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Moq;
 
 namespace AgendaApi.Tests.UseCases;
@@ -14,6 +15,7 @@ public class CheckAvailabilityUseCaseTests
     private readonly Mock<ICalendarConnectionRepository> _connectionRepo = new();
     private readonly Mock<ICalendarProviderFactory> _providerFactory = new();
     private readonly Mock<IServiceTypeRepository> _serviceTypeRepo = new();
+    private readonly Mock<ILogger<CheckAvailabilityUseCase>> _logger = new();
 
     private readonly CheckAvailabilityUseCase _useCase;
 
@@ -24,7 +26,8 @@ public class CheckAvailabilityUseCaseTests
             _appointmentRepo.Object,
             _connectionRepo.Object,
             _providerFactory.Object,
-            _serviceTypeRepo.Object);
+            _serviceTypeRepo.Object,
+            _logger.Object);
     }
 
     [Fact]

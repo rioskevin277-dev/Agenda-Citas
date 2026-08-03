@@ -1,4 +1,5 @@
 using AgendaApi.Domain.Ports;
+using Microsoft.Extensions.Logging;
 
 namespace AgendaApi.Application.UseCases;
 
@@ -14,6 +15,7 @@ public class SendRemindersUseCase
     private readonly ICalendarConnectionRepository _connectionRepo;
     private readonly IMessagingProvider _messagingProvider;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly ILogger<SendRemindersUseCase> _logger;
 
     public SendRemindersUseCase(
         IAppointmentRepository appointmentRepo,
@@ -21,7 +23,8 @@ public class SendRemindersUseCase
         ICalendarProviderFactory providerFactory,
         ICalendarConnectionRepository connectionRepo,
         IMessagingProvider messagingProvider,
-        IUnitOfWork unitOfWork)
+        IUnitOfWork unitOfWork,
+        ILogger<SendRemindersUseCase> logger)
     {
         _appointmentRepo = appointmentRepo;
         _clientRepo = clientRepo;
@@ -29,6 +32,7 @@ public class SendRemindersUseCase
         _connectionRepo = connectionRepo;
         _messagingProvider = messagingProvider;
         _unitOfWork = unitOfWork;
+        _logger = logger;
     }
 
     public async Task<int> ExecuteAsync(CancellationToken ct = default)
@@ -56,7 +60,7 @@ public class SendRemindersUseCase
             }
             catch (Exception ex)
             {
-                System.Console.WriteLine($"[SendReminders] Error enviando recordatorio: {ex.Message}");
+                _logger.LogWarning(ex, "[SendReminders] Error enviando recordatorio: {Message}", ex.Message);
             }
         }
 

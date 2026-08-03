@@ -3,6 +3,7 @@ using AgendaApi.Application.UseCases;
 using AgendaApi.Domain.Entities;
 using AgendaApi.Domain.Ports;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Moq;
 
 namespace AgendaApi.Tests.UseCases;
@@ -17,6 +18,7 @@ public class RescheduleAppointmentUseCaseTests
     private readonly Mock<IMessagingProvider> _messagingProvider = new();
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
     private readonly Mock<ICalendarProvider> _calendarProvider = new();
+    private readonly Mock<ILogger<RescheduleAppointmentUseCase>> _logger = new();
 
     private readonly RescheduleAppointmentUseCase _useCase;
 
@@ -29,7 +31,8 @@ public class RescheduleAppointmentUseCaseTests
             _providerFactory.Object,
             _clientRepo.Object,
             _messagingProvider.Object,
-            _unitOfWork.Object);
+            _unitOfWork.Object,
+            _logger.Object);
     }
 
     [Fact]

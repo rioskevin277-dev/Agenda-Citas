@@ -122,48 +122,68 @@ public class MicrosoftGraphCalendarAdapter : ICalendarProvider
 
     public async Task<List<ExternalCalendarChange>> GetChangesAsync(Guid tenantId, string syncToken, CancellationToken ct = default)
     {
-        var url = $"{GraphApiBase}/me/calendar/events/delta?$deltaToken={Uri.EscapeDataString(syncToken)}";
-        var (json, _) = await SendWithRefreshAsync(tenantId, HttpMethod.Get, url, null, ct);
+        // Si syncToken es una URL completa (nuevo formato: @odata.deltaLink completo),
+        // úsala directamente. Si está vacío, empieza fresco. Si es un token corto
+        // (old format, extraído de admin previo), reconstruye la URL.
+        var url = string.IsNullOrEmpty(syncToken)
+            ? $"{GraphApiBase}/me/calendar/events/delta"
+            : syncToken.StartsWith("https://")
+                ? syncToken
+                : $"{GraphApiBase}/me/calendar/events/delta?$deltaToken={Uri.EscapeDataString(syncToken)}";
 
-        var data = JsonSerializer.Deserialize<GraphDeltaResponse>(json);
         var changes = new List<ExternalCalendarChange>();
+        string? deltaLink = null;
 
-        if (data?.Value == null) return changes;
-
-        foreach (var item in data.Value)
+        // Pueden haber múltiples páginas; seguir @odata.nextLink hasta el final
+        while (!string.IsNullOrEmpty(url))
         {
-            if (item.IsDeleted || item.Status == "cancelled")
+            var (json, _) = await SendWithRefreshAsync(tenantId, HttpMethod.Get, url, null, ct);
+            var data = JsonSerializer.Deserialize<GraphDeltaResponse>(json);
+
+            if (data?.Value != null)
             {
-                changes.Add(new ExternalCalendarChange
+                foreach (var item in data.Value)
                 {
-                    ExternalEventId = item.Id,
-                    Tipo = "deleted",
-                    Summary = item.Subject
-                });
+                    if (item.IsDeleted || item.Status == "cancelled")
+                    {
+                        changes.Add(new ExternalCalendarChange
+                        {
+                            ExternalEventId = item.Id,
+                            Tipo = "deleted",
+                            Summary = item.Subject
+                        });
+                    }
+                    else
+                    {
+                        changes.Add(new ExternalCalendarChange
+                        {
+                            ExternalEventId = item.Id,
+                            Tipo = "updated",
+                            FechaInicio = item.Start != null ? DateTime.Parse(item.Start.DateTime) : null,
+                            FechaFin = item.End != null ? DateTime.Parse(item.End.DateTime) : null,
+                            Summary = item.Subject
+                        });
+                    }
+                }
             }
-            else
-            {
-                changes.Add(new ExternalCalendarChange
-                {
-                    ExternalEventId = item.Id,
-                    Tipo = "updated",
-                    FechaInicio = item.Start != null ? DateTime.Parse(item.Start.DateTime) : null,
-                    FechaFin = item.End != null ? DateTime.Parse(item.End.DateTime) : null,
-                    Summary = item.Subject
-                });
-            }
+
+            // Guardar el deltaLink de la última página para la próxima iteración
+            if (!string.IsNullOrEmpty(data?.ODataDeltaLink))
+                deltaLink = data.ODataDeltaLink;
+
+            // Seguir paginación si hay @odata.nextLink
+            url = data?.ODataNextLink ?? null!;
         }
 
-        // Guardar @odata.deltaLink (nextLink) para próxima iteración
-        var nextLink = data.ODataNextLink ?? data.ODataDeltaLink;
-        if (!string.IsNullOrEmpty(nextLink))
+        // Almacenar el deltaLink COMPLETO (URL completa) para la próxima consulta
+        if (!string.IsNullOrEmpty(deltaLink))
         {
-            var extractedToken = ExtractDeltaToken(nextLink);
-            if (!string.IsNullOrEmpty(extractedToken))
-            {
-                await UpdateSyncTokenAsync(tenantId, extractedToken, ct);
-                _logger.LogInformation("[MSGraph] DeltaToken actualizado");
-            }
+            await UpdateSyncTokenAsync(tenantId, deltaLink, ct);
+            _logger.LogInformation("[MSGraph] DeltaLink actualizado (full URL)");
+        }
+        else
+        {
+            _logger.LogWarning("[MSGraph] Delta sync completado sin deltaLink — puede requerir resincronización completa");
         }
 
         _logger.LogInformation("[MSGraph] Delta sync: {Count} cambios", changes.Count);
@@ -333,19 +353,6 @@ public class MicrosoftGraphCalendarAdapter : ICalendarProvider
 
         _logger.LogInformation("[MSGraph] Token refrescado exitosamente");
         return data?.AccessToken ?? throw new InvalidOperationException("Error refrescando token de Microsoft");
-    }
-
-    /// <summary>
-    /// Extrae el deltaToken del @odata.nextLink o @odata.deltaLink.
-    /// MS Graph devuelve algo como:
-    /// https://graph.microsoft.com/v1.0/me/calendar/events/delta?$deltaToken=abc123
-    /// </summary>
-    private static string? ExtractDeltaToken(string? link)
-    {
-        if (string.IsNullOrEmpty(link)) return null;
-        var uri = new Uri(link);
-        var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
-        return query["$deltaToken"];
     }
 
     // ─── DTOs ─────────────────────────────────────────────────────

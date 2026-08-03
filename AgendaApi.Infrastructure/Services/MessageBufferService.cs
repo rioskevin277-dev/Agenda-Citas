@@ -20,7 +20,7 @@ public class MessageBufferService : BackgroundService
 {
     private readonly Channel<IncomingMessageEvent> _channel;
     private readonly ConcurrentDictionary<string, UserMessageBuffer> _userBuffers;
-    private readonly ConcurrentDictionary<string, DateTime> _userRateLimits;
+    private readonly ConcurrentDictionary<string, List<DateTime>> _userRateLimits;
     private readonly ILogger<MessageBufferService> _logger;
     private readonly IServiceScopeFactory _scopeFactory;
 
@@ -40,7 +40,7 @@ public class MessageBufferService : BackgroundService
             FullMode = BoundedChannelFullMode.DropOldest
         });
         _userBuffers = new ConcurrentDictionary<string, UserMessageBuffer>();
-        _userRateLimits = new ConcurrentDictionary<string, DateTime>();
+        _userRateLimits = new ConcurrentDictionary<string, List<DateTime>>();
     }
 
     /// <summary>
@@ -190,16 +190,20 @@ public class MessageBufferService : BackgroundService
 
     private bool IsRateLimited(string from)
     {
-        if (_userRateLimits.TryGetValue(from, out var windowStart))
+        var now = DateTime.UtcNow;
+        var timestamps = _userRateLimits.GetOrAdd(from, _ => new List<DateTime>());
+
+        lock (timestamps)
         {
-            if ((DateTime.UtcNow - windowStart).TotalMilliseconds < RateLimitWindowMs)
-            {
-                // TODO: contar mensajes en ventana real
+            // Limpiar timestamps fuera de la ventana
+            timestamps.RemoveAll(t => (now - t).TotalMilliseconds >= RateLimitWindowMs);
+
+            if (timestamps.Count >= MaxMessagesPerWindow)
                 return true;
-            }
+
+            timestamps.Add(now);
         }
 
-        _userRateLimits[from] = DateTime.UtcNow;
         return false;
     }
 
