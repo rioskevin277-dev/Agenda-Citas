@@ -61,17 +61,22 @@ public static class DependencyInjection
         services.AddScoped<ICalendarProviderFactory, CalendarProviderFactory>();
 
         // AI Providers
-        services.AddHttpClient<OpenAIProvider>("openai-api", client =>
+        // Usamos named clients (no typed) porque OpenAIProvider/AnthropicProvider
+        // reciben IHttpClientFactory en el constructor, no HttpClient. Registrarlos
+        // como typed clients rompía la resolución por DI (constructor no compatible).
+        services.AddHttpClient("openai-api", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(60);
             client.DefaultRequestHeaders.Add("User-Agent", "AgendaApi/1.0");
         });
+        services.AddScoped<OpenAIProvider>();
 
-        services.AddHttpClient<AnthropicProvider>("anthropic-api", client =>
+        services.AddHttpClient("anthropic-api", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(60);
             client.DefaultRequestHeaders.Add("User-Agent", "AgendaApi/1.0");
         });
+        services.AddScoped<AnthropicProvider>();
 
         // WhatsApp Provider
         services.AddHttpClient<WhatsAppCloudApiAdapter>("whatsapp-api", client =>
