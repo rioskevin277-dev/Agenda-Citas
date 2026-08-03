@@ -35,7 +35,7 @@ public class MicrosoftOAuthController : ControllerBase
     }
 
     /// <summary>
-    /// GET /api/oauth/microsoft/authorize?tenantId={tenantId}
+    /// GET /api/v1/oauth/microsoft/authorize?tenantId={tenantId}
     /// Inicia el flujo OAuth redirigiendo al usuario a Microsoft.
     /// </summary>
     [HttpGet("authorize")]
@@ -44,7 +44,7 @@ public class MicrosoftOAuthController : ControllerBase
         var clientId = Environment.GetEnvironmentVariable("MicrosoftOAuth__ClientId")
                        ?? throw new InvalidOperationException("MicrosoftOAuth__ClientId no configurado");
 
-        var redirectUri = $"{Request.Scheme}://{Request.Host}/api/oauth/microsoft/callback";
+        var redirectUri = $"{Request.Scheme}://{Request.Host}/api/v1/oauth/microsoft/callback";
         var state = Convert.ToBase64String(
             System.Text.Encoding.UTF8.GetBytes(
                 JsonSerializer.Serialize(new { tenantId })));
@@ -63,7 +63,7 @@ public class MicrosoftOAuthController : ControllerBase
     }
 
     /// <summary>
-    /// GET /api/oauth/microsoft/callback?code={code}&state={state}
+    /// GET /api/v1/oauth/microsoft/callback?code={code}&state={state}
     /// Microsoft redirige aquí después de la autorización.
     /// Intercambia el código por tokens y los guarda cifrados.
     /// </summary>
@@ -86,7 +86,7 @@ public class MicrosoftOAuthController : ControllerBase
             var clientSecret = Environment.GetEnvironmentVariable("MicrosoftOAuth__ClientSecret")
                                ?? throw new InvalidOperationException("MicrosoftOAuth__ClientSecret no configurado");
 
-            var redirectUri = $"{Request.Scheme}://{Request.Host}/api/oauth/microsoft/callback";
+            var redirectUri = $"{Request.Scheme}://{Request.Host}/api/v1/oauth/microsoft/callback";
 
             // Intercambiar código por tokens
             var httpClient = _httpClientFactory.CreateClient();

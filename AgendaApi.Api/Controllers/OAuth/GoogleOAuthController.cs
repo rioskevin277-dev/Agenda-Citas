@@ -35,7 +35,7 @@ public class GoogleOAuthController : ControllerBase
     }
 
     /// <summary>
-    /// GET /api/oauth/google/authorize?tenantId={tenantId}
+    /// GET /api/v1/oauth/google/authorize?tenantId={tenantId}
     /// Inicia el flujo OAuth redirigiendo al usuario a Google.
     /// </summary>
     [HttpGet("authorize")]
@@ -44,7 +44,7 @@ public class GoogleOAuthController : ControllerBase
         var clientId = Environment.GetEnvironmentVariable("GoogleOAuth__ClientId")
                        ?? throw new InvalidOperationException("GoogleOAuth__ClientId no configurado");
 
-        var redirectUri = $"{Request.Scheme}://{Request.Host}/api/oauth/google/callback";
+        var redirectUri = $"{Request.Scheme}://{Request.Host}/api/v1/oauth/google/callback";
 
         var scopes = "https://www.googleapis.com/auth/calendar%20https://www.googleapis.com/auth/calendar.events";
         var state = Convert.ToBase64String(
@@ -66,7 +66,7 @@ public class GoogleOAuthController : ControllerBase
     }
 
     /// <summary>
-    /// GET /api/oauth/google/callback?code={code}&state={state}
+    /// GET /api/v1/oauth/google/callback?code={code}&state={state}
     /// Google redirige aquí después de la autorización.
     /// Intercambia el código por tokens y los guarda cifrados.
     /// </summary>
@@ -90,7 +90,7 @@ public class GoogleOAuthController : ControllerBase
             var clientSecret = Environment.GetEnvironmentVariable("GoogleOAuth__ClientSecret")
                                ?? throw new InvalidOperationException("GoogleOAuth__ClientSecret no configurado");
 
-            var redirectUri = $"{Request.Scheme}://{Request.Host}/api/oauth/google/callback";
+            var redirectUri = $"{Request.Scheme}://{Request.Host}/api/v1/oauth/google/callback";
 
             // Intercambiar código por tokens
             var httpClient = _httpClientFactory.CreateClient();
