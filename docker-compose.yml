@@ -44,6 +44,7 @@ services:
       - WhatsApp__AccessToken=${WHATSAPP_ACCESS_TOKEN}
       - WhatsApp__PhoneNumberId=${WHATSAPP_PHONE_NUMBER_ID}
       - WhatsApp__VerifyToken=${WHATSAPP_VERIFY_TOKEN}
+      - Groq__ApiKey=${GROQ_API_KEY}
       - GoogleOAuth__ClientId=${GOOGLE_OAUTH_CLIENT_ID}
       - GoogleOAuth__ClientSecret=${GOOGLE_OAUTH_CLIENT_SECRET}
       - MicrosoftOAuth__ClientId=${MS_OAUTH_CLIENT_ID}

@@ -61,9 +61,16 @@ public static class DependencyInjection
         services.AddScoped<ICalendarProviderFactory, CalendarProviderFactory>();
 
         // AI Providers
-        // Usamos named clients (no typed) porque OpenAIProvider/AnthropicProvider
-        // reciben IHttpClientFactory en el constructor, no HttpClient. Registrarlos
+        // Usamos named clients (no typed) porque los proveedores reciben
+        // IHttpClientFactory en el constructor, no HttpClient. Registrarlos
         // como typed clients rompía la resolución por DI (constructor no compatible).
+        services.AddHttpClient("groq-api", client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(60);
+            client.DefaultRequestHeaders.Add("User-Agent", "AgendaApi/1.0");
+        });
+        services.AddScoped<GroqProvider>();
+
         services.AddHttpClient("openai-api", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(60);

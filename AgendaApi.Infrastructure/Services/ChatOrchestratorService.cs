@@ -31,8 +31,14 @@ public class ChatOrchestratorService
         using var scope = _scopeFactory.CreateScope();
         var services = scope.ServiceProvider;
 
-        var aiProvider = services.GetRequiredService<OpenAIProvider>();
-        var fallbackProvider = services.GetRequiredService<AnthropicProvider>();
+        // Cadena de proveedores: se prueba en orden hasta que uno responde.
+        // Groq (gratuito) primero, luego OpenAI y Anthropic como fallback.
+        var aiProviders = new (string Name, IAiProvider Provider, List<object> Tools)[]
+        {
+            ("Groq", services.GetRequiredService<GroqProvider>(), AppointmentToolDefinitions.GetOpenAiToolDefinitions()),
+            ("OpenAI", services.GetRequiredService<OpenAIProvider>(), AppointmentToolDefinitions.GetOpenAiToolDefinitions()),
+            ("Anthropic", services.GetRequiredService<AnthropicProvider>(), AppointmentToolDefinitions.GetAnthropicToolDefinitions())
+        };
         var messaging = services.GetRequiredService<IMessagingProvider>();
         var tenantContext = services.GetRequiredService<ITenantContext>();
 
@@ -57,31 +63,40 @@ public class ChatOrchestratorService
             new() { Role = "user", Content = messageContent }
         };
 
-        var tools = AppointmentToolDefinitions.GetOpenAiToolDefinitions();
-
         for (int iteration = 0; iteration < MaxToolIterations; iteration++)
         {
             _logger.LogDebug("[Orchestrator] Iteracion {Iter}/{Max}", iteration + 1, MaxToolIterations);
 
-            AiToolCallResult result;
+            AiToolCallResult result = new() { Success = false };
+            string? usedProvider = null;
 
-            try
+            // Probar proveedores en orden hasta obtener una respuesta válida
+            foreach (var p in aiProviders)
             {
-                result = await aiProvider.GenerateResponseWithToolsAsync(messages, tools, ct);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "[Orchestrator] OpenAI fallo, usando Anthropic como fallback");
-                var anthropicTools = AppointmentToolDefinitions.GetAnthropicToolDefinitions();
-                result = await fallbackProvider.GenerateResponseWithToolsAsync(messages, anthropicTools, ct);
+                try
+                {
+                    result = await p.Provider.GenerateResponseWithToolsAsync(messages, p.Tools, ct);
+                    if (result.Success)
+                    {
+                        usedProvider = p.Name;
+                        break;
+                    }
+                    _logger.LogWarning("[Orchestrator] {Provider} fallo (Success=false): {Error}",
+                        p.Name, result.TextContent);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning("[Orchestrator] {Provider} fallo: {Message}", p.Name, ex.Message);
+                }
             }
 
-            if (!result.Success)
+            if (usedProvider == null)
             {
-                _logger.LogError("[Orchestrator] Error en AI provider: {Error}", result.TextContent);
+                _logger.LogError("[Orchestrator] Todos los proveedores fallaron: {Error}", result.TextContent);
                 await messaging.SendTextAsync(userPhone, "Lo siento, tuve un problema. Por favor intenta mas tarde.");
                 return;
             }
+            _logger.LogInformation("[Orchestrator] Respondiendo con {Provider}", usedProvider);
 
             if (!string.IsNullOrWhiteSpace(result.TextContent))
             {
