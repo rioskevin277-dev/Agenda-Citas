@@ -202,7 +202,12 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
         try
         {
             var externalId = message.GetProperty("id").GetString();
-            var from = message.GetProperty("from").GetString();
+            // Meta cambió el formato: ya no envía "from" (teléfono), sino
+            // "from_user_id" (identificador del usuario a nivel negocio).
+            // Soportamos ambos para compatibilidad con el formato anterior.
+            var from = message.TryGetProperty("from_user_id", out var fuid) ? fuid.GetString()
+                     : message.TryGetProperty("from", out var f) ? f.GetString()
+                     : null;
             var type = message.GetProperty("type").GetString();
             string? mediaId = null;
             string? mediaType = null;
