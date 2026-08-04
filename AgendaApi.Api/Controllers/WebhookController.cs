@@ -58,6 +58,8 @@ public class WebhookController : ControllerBase
         {
             _logger.LogInformation("[Webhook] Recibido payload de WhatsApp");
 
+            LogDeliveryStatus(body);
+
             var messages = await _messagingProvider.ParseWebhookPayloadAsync(body);
 
             foreach (var msg in messages)
@@ -90,6 +92,54 @@ public class WebhookController : ControllerBase
         {
             _logger.LogError(ex, "[Webhook] Error procesando payload");
             return StatusCode(500);
+        }
+    }
+
+    /// <summary>
+    /// Registra los callbacks de estado de entrega de Meta (sent/delivered/failed).
+    /// Solo loguea el estado y código de error, nunca el contenido del mensaje.
+    /// </summary>
+    private void LogDeliveryStatus(object body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(JsonSerializer.Serialize(body));
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("entry", out var entries))
+                return;
+
+            foreach (var entry in entries.EnumerateArray())
+            {
+                if (!entry.TryGetProperty("changes", out var changes))
+                    continue;
+                foreach (var change in changes.EnumerateArray())
+                {
+                    if (!change.TryGetProperty("value", out var value))
+                        continue;
+                    if (!value.TryGetProperty("statuses", out var statuses))
+                        continue;
+
+                    foreach (var st in statuses.EnumerateArray())
+                    {
+                        var stStatus = st.TryGetProperty("status", out var s) ? s.GetString() : "?";
+                        var recipient = st.TryGetProperty("recipient_id", out var rId) ? rId.GetString() : "?";
+                        string detail = "OK";
+                        if (st.TryGetProperty("errors", out var errs) && errs.GetArrayLength() > 0)
+                        {
+                            var e0 = errs[0];
+                            var code = e0.TryGetProperty("code", out var c) ? c.GetInt32() : 0;
+                            var title = e0.TryGetProperty("title", out var t) ? t.GetString() : "";
+                            detail = $"{code} {title}";
+                        }
+                        _logger.LogInformation("[Webhook] Entrega Msg: status={Status} recip={Recipient} {Detail}",
+                            stStatus, recipient, detail);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[Webhook] No fue un payload de estado");
         }
     }
 
