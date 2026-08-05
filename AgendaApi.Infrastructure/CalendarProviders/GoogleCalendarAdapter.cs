@@ -21,7 +21,51 @@ public class GoogleCalendarAdapter : ICalendarProvider
     private const string OAuthTokenUrl = "https://oauth2.googleapis.com/token";
     private const string DefaultCalendarId = "primary";
 
-    public GoogleCalendarAdapter(
+    // Zona horaria del negocio (Colombia por defecto, UTC-5, sin horario de verano).
+    // Internamente la app guarda las horas locales tratadas como si fueran UTC
+    // (las reglas 09:00–18:00 se almacenan como 09:00Z). Google Calendar, en cambio,
+    // trabaja con instantes UTC reales. Por eso hay que convertir en la frontera:
+    // instante real (Google) -> hora local al leer, y hora local -> instante real
+    // al crear/actualizar eventos. Configurable vía "Calendar__TimeZone".
+    private static readonly TimeZoneInfo BusinessTimeZone =
+        TimeZoneInfo.FindSystemTimeZoneById(
+            Environment.GetEnvironmentVariable("Calendar__TimeZone") ?? "America/Bogota");
+
+    /// <summary>
+    /// Google devuelve instantes UTC (o con offset). Convertimos ese instante absoluto
+    /// a la hora local del negocio, pero la guardamos "disfrazada de UTC" para que cuadre
+    /// con el resto de la app (que trata horas locales como UTC). Retorna un DateTime
+    /// cuyo valor es la hora local, con Kind=Utc.
+    /// </summary>
+    private static DateTime FromGoogleInstant(string? dateTime, string? dateOnly)
+    {
+        if (!string.IsNullOrEmpty(dateTime))
+        {
+            // DateTime.Parse interpreta el offset del string y devuelve el instante
+            // en la zona local de la máquina (el contenedor corre en UTC).
+            var instant = DateTime.Parse(dateTime);
+            var local = TimeZoneInfo.ConvertTimeFromUtc(
+                DateTime.SpecifyKind(instant, DateTimeKind.Utc), BusinessTimeZone);
+            return DateTime.SpecifyKind(local, DateTimeKind.Utc);
+        }
+
+        if (!string.IsNullOrEmpty(dateOnly))
+            return DateOnly.Parse(dateOnly).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+
+        return DateTime.MinValue;
+    }
+
+    /// <summary>
+    /// Convierte una fecha interna de la app (hora local "disfrazada de UTC") al instante
+    /// UTC real que espera Google. Se usa al crear o actualizar eventos.
+    /// </summary>
+    private static string LocalDateTimeToGoogleIso(DateTime local)
+    {
+        var utc = TimeZoneInfo.ConvertTimeToUtc(
+            DateTime.SpecifyKind(local, DateTimeKind.Unspecified), BusinessTimeZone);
+        return utc.ToString("o");
+    }
+        public GoogleCalendarAdapter(
         IHttpClientFactory httpClientFactory,
         ICalendarConnectionRepository connectionRepo,
         ITokenEncryptionService tokenEncryption,
@@ -55,8 +99,8 @@ public class GoogleCalendarAdapter : ICalendarProvider
             .Where(e => e.Start != null && e.End != null)
             .Select(e => new TimeSlot
             {
-                FechaInicio = DateTime.Parse(e.Start!.DateTime ?? e.Start!.Date!),
-                FechaFin = DateTime.Parse(e.End!.DateTime ?? e.End!.Date!),
+                FechaInicio = FromGoogleInstant(e.Start!.DateTime, e.Start.Date),
+                FechaFin = FromGoogleInstant(e.End!.DateTime, e.End.Date),
                 Disponible = false,
                 ExternalEventId = e.Id
             })
@@ -70,8 +114,8 @@ public class GoogleCalendarAdapter : ICalendarProvider
         {
             summary = $"Cita: {appointment.Notas ?? "Agendada"}",
             description = appointment.Notas ?? "",
-            start = new { dateTime = appointment.FechaInicio.ToString("o"), timeZone = "UTC" },
-            end = new { dateTime = appointment.FechaFin.ToString("o"), timeZone = "UTC" }
+            start = new { dateTime = LocalDateTimeToGoogleIso(appointment.FechaInicio), timeZone = "UTC" },
+            end = new { dateTime = LocalDateTimeToGoogleIso(appointment.FechaFin), timeZone = "UTC" }
         });
 
         var url = $"{CalendarApiBase}/calendars/{Uri.EscapeDataString(calendarId)}/events";
@@ -92,8 +136,8 @@ public class GoogleCalendarAdapter : ICalendarProvider
         var body = JsonSerializer.Serialize(new
         {
             summary = $"Cita: {appointment.Notas ?? "Actualizada"}",
-            start = new { dateTime = appointment.FechaInicio.ToString("o"), timeZone = "UTC" },
-            end = new { dateTime = appointment.FechaFin.ToString("o"), timeZone = "UTC" }
+            start = new { dateTime = LocalDateTimeToGoogleIso(appointment.FechaInicio), timeZone = "UTC" },
+            end = new { dateTime = LocalDateTimeToGoogleIso(appointment.FechaFin), timeZone = "UTC" }
         });
 
         var url = $"{CalendarApiBase}/calendars/{Uri.EscapeDataString(calendarId)}/events/{appointment.ExternalEventId}";
@@ -146,8 +190,8 @@ public class GoogleCalendarAdapter : ICalendarProvider
                 {
                     ExternalEventId = item.Id,
                     Tipo = "updated",
-                    FechaInicio = item.Start != null ? DateTime.Parse(item.Start.DateTime ?? item.Start.Date!) : null,
-                    FechaFin = item.End != null ? DateTime.Parse(item.End.DateTime ?? item.End.Date!) : null,
+                    FechaInicio = item.Start != null ? FromGoogleInstant(item.Start.DateTime, item.Start.Date) : null,
+                    FechaFin = item.End != null ? FromGoogleInstant(item.End.DateTime, item.End.Date) : null,
                     Summary = item.Summary
                 });
             }

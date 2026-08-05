@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using AgendaApi.Domain.Ports;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -16,19 +17,27 @@ public class GoogleOAuthController : ControllerBase
 {
     private readonly ITenantRepository _tenantRepo;
     private readonly ICalendarConnectionRepository _connectionRepo;
+    private readonly IUnitOfWork _unitOfWork;
     private readonly ITokenEncryptionService _tokenEncryption;
     private readonly ILogger<GoogleOAuthController> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
 
+    // Google devuelve las propiedades en snake_case (access_token, expires_in, ...).
+    // System.Text.Json es sensible a mayúsculas por defecto, así que sin esto
+    // las respuestas se deserializaban vacías y fallaba el intercambio de tokens.
+    private static readonly JsonSerializerOptions WebJsonOptions = new(JsonSerializerDefaults.Web);
+
     public GoogleOAuthController(
         ITenantRepository tenantRepo,
         ICalendarConnectionRepository connectionRepo,
+        IUnitOfWork unitOfWork,
         ITokenEncryptionService tokenEncryption,
         ILogger<GoogleOAuthController> logger,
         IHttpClientFactory httpClientFactory)
     {
         _tenantRepo = tenantRepo;
         _connectionRepo = connectionRepo;
+        _unitOfWork = unitOfWork;
         _tokenEncryption = tokenEncryption;
         _logger = logger;
         _httpClientFactory = httpClientFactory;
@@ -46,7 +55,7 @@ public class GoogleOAuthController : ControllerBase
 
         var redirectUri = $"{Request.Scheme}://{Request.Host}/api/v1/oauth/google/callback";
 
-        var scopes = "https://www.googleapis.com/auth/calendar%20https://www.googleapis.com/auth/calendar.events";
+        var scopes = "https://www.googleapis.com/auth/calendar%20https://www.googleapis.com/auth/calendar.events%20https://www.googleapis.com/auth/userinfo.email";
         var state = Convert.ToBase64String(
             System.Text.Encoding.UTF8.GetBytes(
                 JsonSerializer.Serialize(new { tenantId })));
@@ -80,7 +89,7 @@ public class GoogleOAuthController : ControllerBase
         {
             // Decodificar state para obtener tenantId
             var stateJson = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(state));
-            var stateData = JsonSerializer.Deserialize<OAuthState>(stateJson);
+            var stateData = JsonSerializer.Deserialize<OAuthState>(stateJson, WebJsonOptions);
             var tenantId = stateData?.TenantId ?? Guid.Empty;
 
             _logger.LogInformation("[GoogleOAuth] Callback recibido para tenant {TenantId}", tenantId);
@@ -104,23 +113,38 @@ public class GoogleOAuthController : ControllerBase
             });
 
             var response = await httpClient.PostAsync("https://oauth2.googleapis.com/token", tokenBody, ct);
-            response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync(ct);
-            var tokenData = JsonSerializer.Deserialize<GoogleTokenResponse>(json);
+
+            if (!response.IsSuccessStatusCode)
+                return StatusCode((int)response.StatusCode,
+                    new { error = "Google rechazó el intercambio de tokens", status = (int)response.StatusCode, detail = json });
+
+            var tokenData = JsonSerializer.Deserialize<GoogleTokenResponse>(json, WebJsonOptions);
 
             if (tokenData == null || string.IsNullOrEmpty(tokenData.AccessToken))
-                return BadRequest(new { error = "Error obteniendo tokens de Google" });
+                return BadRequest(new { error = "Error obteniendo tokens de Google", detail = json });
 
-            // Obtener info del usuario para el accountEmail
-            var userInfoRequest = new HttpRequestMessage(
-                System.Net.Http.HttpMethod.Get,
-                "https://www.googleapis.com/oauth2/v2/userinfo");
-            userInfoRequest.Headers.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", tokenData.AccessToken);
-            var userInfoResponse = await httpClient.SendAsync(userInfoRequest, ct);
-            userInfoResponse.EnsureSuccessStatusCode();
-            var userInfoJson = await userInfoResponse.Content.ReadAsStringAsync(ct);
-            var userInfo = JsonSerializer.Deserialize<GoogleUserInfo>(userInfoJson);
+            // Obtener info del usuario para el accountEmail (best-effort: si falla,
+            // se guarda la conexión igualmente, el email es solo informativo).
+            GoogleUserInfo? userInfo = null;
+            try
+            {
+                var userInfoRequest = new HttpRequestMessage(
+                    System.Net.Http.HttpMethod.Get,
+                    "https://www.googleapis.com/oauth2/v2/userinfo");
+                userInfoRequest.Headers.Authorization =
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", tokenData.AccessToken);
+                var userInfoResponse = await httpClient.SendAsync(userInfoRequest, ct);
+                if (userInfoResponse.IsSuccessStatusCode)
+                {
+                    var userInfoJson = await userInfoResponse.Content.ReadAsStringAsync(ct);
+                    userInfo = JsonSerializer.Deserialize<GoogleUserInfo>(userInfoJson, WebJsonOptions);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[GoogleOAuth] No se pudo obtener la info del usuario, continúa sin email");
+            }
 
             // Guardar o actualizar conexión
             var existing = await _connectionRepo.GetByTenantIdAsync(tenantId, ct);
@@ -152,6 +176,8 @@ public class GoogleOAuthController : ControllerBase
                 await _connectionRepo.CreateAsync(connection, ct);
             }
 
+            await _unitOfWork.SaveChangesAsync(ct);
+
             _logger.LogInformation("[GoogleOAuth] Conexión de Google Calendar configurada para tenant {TenantId}", tenantId);
 
             return Ok(new
@@ -170,19 +196,25 @@ public class GoogleOAuthController : ControllerBase
 
     private class OAuthState
     {
+        [JsonPropertyName("tenantId")]
         public Guid TenantId { get; set; }
     }
 
     private class GoogleTokenResponse
     {
+        [JsonPropertyName("access_token")]
         public string AccessToken { get; set; } = string.Empty;
+        [JsonPropertyName("refresh_token")]
         public string? RefreshToken { get; set; }
+        [JsonPropertyName("expires_in")]
         public int ExpiresIn { get; set; }
     }
 
     private class GoogleUserInfo
     {
+        [JsonPropertyName("email")]
         public string? Email { get; set; }
+        [JsonPropertyName("name")]
         public string? Name { get; set; }
     }
 }

@@ -45,15 +45,21 @@ public static class DependencyInjection
         services.AddSingleton<ITokenEncryptionService, TokenEncryptionService>();
 
         // Calendar Providers (with IHttpClientFactory)
-        services.AddHttpClient<GoogleCalendarAdapter>("google-calendar", client =>
+        // Usamos named clients (no typed): los adaptadores reciben IHttpClientFactory
+        // en el constructor, no HttpClient. Registrarlos como typed clients rompía
+        // la resolución por DI (constructor no compatible) — el adaptador de Google
+        // nunca se construía y GetAvailabilityAsync caía en "usando datos locales".
+        services.AddHttpClient("google-calendar", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(30);
         });
-        services.AddHttpClient<MicrosoftGraphCalendarAdapter>("microsoft-graph", client =>
+        services.AddHttpClient("microsoft-graph", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(30);
         });
 
+        services.AddScoped<GoogleCalendarAdapter>();
+        services.AddScoped<MicrosoftGraphCalendarAdapter>();
         services.AddScoped<ICalendarProvider, GoogleCalendarAdapter>(sp =>
             sp.GetRequiredService<GoogleCalendarAdapter>());
         services.AddScoped<ICalendarProvider, MicrosoftGraphCalendarAdapter>(sp =>

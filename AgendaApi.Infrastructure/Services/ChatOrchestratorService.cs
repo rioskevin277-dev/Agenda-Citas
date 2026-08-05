@@ -56,10 +56,15 @@ public class ChatOrchestratorService
             whatsAppAccessToken: Environment.GetEnvironmentVariable("WhatsApp__AccessToken") ?? Environment.GetEnvironmentVariable("WHATSAPP_ACCESS_TOKEN") ?? "",
             phoneNumberId: tenant?.WhatsAppPhoneNumberId ?? "");
 
+        // Cargar los tipos de servicio reales del tenant para que la IA solo pueda
+        // sugerir/agendar servicios que de verdad existen (evita nombres inventados).
+        var serviceTypeRepo = services.GetRequiredService<IServiceTypeRepository>();
+        var serviceTypes = await serviceTypeRepo.GetByTenantIdAsync(tenantId, ct);
+
         _logger.LogInformation("[Orchestrator] Procesando mensaje de {Phone} para tenant {Tenant}",
             userPhone, tenantId);
 
-        var systemPrompt = GetSystemPrompt(userPhone, clientName);
+        var systemPrompt = GetSystemPrompt(userPhone, clientName, serviceTypes);
 
         // Cargar historial previo de la conversación (si existe) para conservar contexto.
         var conversationKey = ConversationMemoryService.GetKey(tenantId, userPhone);
@@ -187,11 +192,21 @@ public class ChatOrchestratorService
         }
     }
 
-    private static string GetSystemPrompt(string userPhone, string? clientName = null)
+    private static string GetSystemPrompt(string userPhone, string? clientName, List<Domain.Entities.ServiceType>? serviceTypes = null)
     {
         string senderIdentity = string.IsNullOrWhiteSpace(clientName)
             ? $"El cliente que te escribe tiene el WhatsApp {userPhone}."
             : $"El cliente que te escribe se llama {clientName} y su WhatsApp es {userPhone}.";
+
+        // Lista real de servicios disponibles: la IA SOLO debe sugerir/agendar estos.
+        // Si no viene, se omite el bloque (por compatibilidad con pruebas).
+        string serviciosDisponibles = serviceTypes is { Count: > 0 }
+            ? @"
+
+SERVICIOS DISPONIBLES (lista exacta del negocio — NO inventes ni modifiques estos nombres, NO agregues servicios que no esten aqui):
+" + string.Join("\n", serviceTypes.Where(s => s.Activo).Select(s => $"- {s.Nombre}")) + @"
+- Cuando el cliente pida un servicio que NO este en esta lista, informale que no esta disponible y sugiere los que si hay. NUNCA intentes agendar un servicio fuera de esta lista."
+            : "";
 
         // Inyectar la fecha actual: los LLM no conocen la fecha real y tienden a hibernar el año
         // (en producción llegaron a generar 2024 para "el viernes"). Con la fecha como referencia
@@ -226,6 +241,7 @@ REGLAS CRITICAS SOBRE LOS DATOS DEL CLIENTE:
 - El WhatsApp del cliente SIEMPRE es el numero real " + userPhone + @". NUNCA lo inventes ni uses numeros de ejemplo (como 1234567890).
 - Cuando la herramienta create_appointment pida client_whatsapp, usa SIEMPRE " + userPhone + @".
 - Usa el nombre del cliente solo si lo confirmo en la conversacion; si no lo sabes, no lo inventes.
+" + serviciosDisponibles + @"
 
 HERRAMIENTAS DISPONIBLES:
 - check_availability: Consultar horarios disponibles
