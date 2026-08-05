@@ -23,6 +23,10 @@ public record AppointmentCreateDto
 public record AppointmentRescheduleDto
 {
     public Guid AppointmentId { get; init; }
+
+    /// <summary>Lookup alternativo: WhatsApp del cliente (cuando no se conoce el ID real de la cita).</summary>
+    public string? AppointmentIdentifier { get; init; }
+
     public Guid TenantId { get; init; }
     public DateTime NuevaFechaInicio { get; init; }
     public DateTime NuevaFechaFin { get; init; }

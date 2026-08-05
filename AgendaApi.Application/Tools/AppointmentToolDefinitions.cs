@@ -18,6 +18,7 @@ public static class AppointmentToolDefinitions
             CreateAppointmentTool(),
             CancelAppointmentTool(),
             RescheduleAppointmentTool(),
+            ConfirmAppointmentTool(),
             ListAppointmentsTool()
         };
     }
@@ -33,6 +34,7 @@ public static class AppointmentToolDefinitions
             CreateAppointmentToolAnthropic(),
             CancelAppointmentToolAnthropic(),
             RescheduleAppointmentToolAnthropic(),
+            ConfirmAppointmentToolAnthropic(),
             ListAppointmentsToolAnthropic()
         };
     }
@@ -138,7 +140,10 @@ public static class AppointmentToolDefinitions
                 name = "cancel_appointment",
                 description = "Cancela una cita existente. Se necesita el ID de la cita o los datos del cliente " +
                               "para identificar la cita. Preguntar al cliente qué cita desea cancelar si hay varias. " +
-                              "Se puede proporcionar un motivo opcional.",
+                              "Se puede proporcionar un motivo opcional. " +
+                              "IMPORTANTE: tras una cancelación EXITOSA, la cita ya no existe. " +
+                              "NO llames a create_appointment para reagendarla a menos que el cliente lo pida " +
+                              "explícitamente después de la cancelación. Termina el turno confirmando la cancelación.",
                 parameters = new
                 {
                     type = "object",
@@ -181,7 +186,9 @@ public static class AppointmentToolDefinitions
                         appointment_id = new
                         {
                             type = "string",
-                            description = "ID de la cita a reprogramar"
+                            description = "ID real de la cita (si lo conoces de una respuesta anterior) o el número " +
+                                          "de WhatsApp del cliente (sin +) para reprogramar su próxima cita. " +
+                                          "NUNCA inventes un ID: si no lo tienes, usa el WhatsApp del cliente."
                         },
                         nueva_fecha_inicio = new
                         {
@@ -190,6 +197,36 @@ public static class AppointmentToolDefinitions
                         }
                     },
                     required = new[] { "appointment_id", "nueva_fecha_inicio" }
+                }
+            }
+        };
+    }
+
+    private static object ConfirmAppointmentTool()
+    {
+        return new
+        {
+            type = "function",
+            function = new
+            {
+                name = "confirm_appointment",
+                description = "Confirma una cita existente. Se usa cuando el cliente responda CONFIRMAR a un " +
+                              "recordatorio o cuando pida confirmar su cita. Se necesita el ID de la cita o los " +
+                              "datos del cliente para identificarla. Si hay varias, pregunta al cliente cuál confirmar. " +
+                              "Tras confirmar, la cita queda en estado 'confirmed'.",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        appointment_identifier = new
+                        {
+                            type = "string",
+                            description = "ID de la cita, o número de WhatsApp del cliente para identificar la cita " +
+                                          "a confirmar. Si se pasa un número, se confirma la próxima cita del cliente."
+                        }
+                    },
+                    required = new[] { "appointment_identifier" }
                 }
             }
         };
@@ -221,7 +258,7 @@ public static class AppointmentToolDefinitions
                             type = "string",
                             description = "Filtrar por estado: pending, confirmed, cancelled, completed, " +
                                           "o 'upcoming' para las próximas (pendientes + confirmadas). Por defecto: upcoming",
-                            enumValues = new[] { "pending", "confirmed", "cancelled", "completed", "upcoming" }
+                            @enum = new[] { "pending", "confirmed", "cancelled", "completed", "upcoming" }
                         }
                     },
                     required = new[] { "client_whatsapp" }
@@ -305,10 +342,28 @@ public static class AppointmentToolDefinitions
                 type = "object",
                 properties = new
                 {
-                    appointment_id = new { type = "string", description = "ID de la cita" },
+                    appointment_id = new { type = "string", description = "ID real de la cita o el WhatsApp del cliente (sin +) para su próxima cita. Nunca inventes un ID." },
                     nueva_fecha_inicio = new { type = "string", description = "Nueva fecha/hora (ISO 8601)" }
                 },
                 required = new[] { "appointment_id", "nueva_fecha_inicio" }
+            }
+        };
+    }
+
+    private static object ConfirmAppointmentToolAnthropic()
+    {
+        return new
+        {
+            name = "confirm_appointment",
+            description = "Confirma una cita existente. Se usa cuando el cliente responda CONFIRMAR a un recordatorio.",
+            input_schema = new
+            {
+                type = "object",
+                properties = new
+                {
+                    appointment_identifier = new { type = "string", description = "ID de cita o WhatsApp del cliente" }
+                },
+                required = new[] { "appointment_identifier" }
             }
         };
     }

@@ -1,43 +1,108 @@
-# AgendaApi — Agente de Citas Multi-Tenant por WhatsApp
+# AgendaApi — Asistente de Citas por WhatsApp (Multi-Tenant)
 
-Agente conversacional multi-tenant que agenda citas en calendario a través de **WhatsApp**, con integración a **Google Calendar** y **Microsoft 365**.
+Agente conversacional con IA que **agenda, consulta, reprograma, confirma y cancela citas** a través de **WhatsApp**, sincronizadas con **Google Calendar** (y preparado para **Microsoft 365**). Multi-tenant: un mismo sistema sirve a varios negocios, cada uno con su propio calendario, servicios y horarios.
 
 ---
 
-## ⚡ Inicio Rápido (Desarrollo Local)
+## ⚡ Lo importante (empieza aquí)
 
-Solo necesitas **un archivo `.env`** y **.NET 8 SDK**.
+### ¿Qué es?
+Un **bot de WhatsApp** con inteligencia artificial que atiende a tus clientes: les dice horarios disponibles, les agenda la cita y la crea como evento real en tu Google Calendar. El cliente no habla con una persona, habla con el bot.
+
+### ¿Cómo funciona, en 1 frase?
+```
+WhatsApp → Meta → tu dominio → túnel → API .NET → IA (Groq→OpenAI→Anthropic) → Google Calendar
+```
+
+### ¿Cómo se inicia?
+Dos modos:
+
+| Modo | Comando | Para qué |
+|---|---|---|
+| **Desarrollo local** | `.\run.ps1` (o `setup-dev.ps1`) | Pruebas en tu máquina, sin Docker |
+| **Producción** | `.\scripts\start-production.ps1` | Servicio real en tu PC con túnel |
+
+Solo necesitas **.NET 8 SDK** (local) y **un único archivo `.env`** con las claves.
+
+### URLs de producción
+- API: `https://api.adamcoia.com`
+- Swagger: `https://api.adamcoia.com/swagger`
+- Health: `https://api.adamcoia.com/health`
+
+---
+
+## 🧩 ¿Cómo funciona el asistente en detalle?
+
+Cada mensaje de WhatsApp pasa por un **orquestador de IA** (`ChatOrchestratorService`) que decide qué hacer, con un ciclo de *tool-calling*:
+
+1. **Entra el mensaje** del cliente al webhook de WhatsApp.
+2. El orquestador carga el **contexto del negocio**: servicios reales, horarios, historial de la conversación (memoria de 24 h).
+3. Pide al modelo de IA una respuesta. El modelo puede **llamar una herramienta** (o varias) en lugar de responder.
+4. El sistema **ejecuta la herramienta** y devuelve el resultado al modelo.
+5. El modelo **redacta la respuesta final** y se envía por WhatsApp.
+
+### Herramientas disponibles (las acciones que el bot sabe hacer)
+
+| Herramienta | Qué hace |
+|---|---|
+| `check_availability` | Verifica horarios libres en el **calendario real** (Google) + reglas del negocio |
+| `create_appointment` | Agenda una cita y crea el evento en Google Calendar |
+| `cancel_appointment` | Cancela una cita (local + Google) |
+| `confirm_appointment` | Marca una cita como confirmada (responde al CONFIRMAR) |
+| `reschedule_appointment` | Reprograma a otra fecha/hora (identifica por WhatsApp o ID) |
+| `list_appointments` | Lista las citas del cliente |
+
+> **Importante**: la IA **solo agenda servicios que existen** en tu negocio. Si un cliente pide algo que no está en la lista, el bot responde que no está disponible en vez de inventar.
+
+### Proveedores de IA (cadena de respaldo)
+El sistema prueba en orden hasta que uno responde:
+1. **Groq** (gratuito, rápido) — principal
+2. **OpenAI** — respaldo
+3. **Anthropic** — segundo respaldo
+
+### Memoria de conversación
+Recuerda el contexto de cada cliente durante **24 horas** (saludo, servicios que pidió, citas en curso). Al expirar, empieza de cero.
+
+---
+
+## ⏰ Recordatorios (con confirmar / cancelar / reagendar)
+
+Un servicio en segundo plano (`ReminderBackgroundService`) envía un recordatorio **~4 horas antes** de cada cita pendiente o confirmada:
+
+```
+⏰ Recordatorio: Tienes una cita agendada para el 07/08/2026 a las 14:00.
+Responde CONFIRMAR para confirmar, CANCELAR para cancelarla o REAGENDAR para cambiar la fecha.
+```
+
+- **CONFIRMAR** → marca la cita como `confirmed` (`confirm_appointment`).
+- **CANCELAR** → la cancela y acaba el turno (no se reintenta).
+- **REAGENDAR** → el bot pregunta la nueva fecha, verifica disponibilidad y la mueve.
+
+El recordatorio se envía **una sola vez** por cita (`recordatorio_enviado_en`).
+
+---
+
+## 🚀 Inicio Rápido — Desarrollo Local
+
+### Requisitos
+- **.NET 8 SDK** ([descargar](https://dotnet.microsoft.com/download))
+- **SQL Server** (Docker `docker compose up -d sqlserver` o instalación local)
+- Un **`.env`** en la raíz del proyecto
 
 ### 1. Clonar
-
 ```bash
 git clone https://github.com/rioskevin277-dev/Agenda-Citas.git
 cd agenda-api
 ```
 
-### 2. Configurar (un solo `.env`)
-
-Edita `C:\Users\USUARIO\agenda-api\.env` con tus datos:
-
-| Variable | Obligatorio | Dónde obtenerla |
-|---|---|---|
-| `OPENAI_API_KEY` | ✅ Sí | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
-| `ConnectionStrings__AgendaDb` | ✅ Sí | Cadena de conexión a SQL Server (ver abajo) |
-| `JWT_SECRET` | ✅ Sí | Cualquier texto de ≥32 caracteres |
-| `MASTER_KEY` | ✅ Sí | `openssl rand -base64 32` o usa la que viene por defecto |
-| `ANTHROPIC_API_KEY` | ❌ No | Fallback si OpenAI falla |
-| `WHATSAPP_*` | ❌ No | Solo para probar webhooks reales |
-
-> **SQL Server**: Puedes usar Docker (`docker compose up -d sqlserver`) o una instalación local.
-> Para SQL Server local con autenticación de Windows, cambia la línea en `.env`:
-> ```env
-> ConnectionStrings__AgendaDb=Server=localhost;Database=AgendaApi;Trusted_Connection=True;TrustServerCertificate=True;MultipleActiveResultSets=true
-> ```
+### 2. Crear el `.env`
+```bash
+copy .env.example .env   # o crea el archivo desde la tabla de abajo
+```
 
 ### 3. Iniciar
-
 ```powershell
-# Opción recomendada — carga .env y corre todo:
+# Opción recomendada — carga .env, migra y corre todo:
 .\run.ps1
 
 # O manualmente:
@@ -45,92 +110,97 @@ $env:ASPNETCORE_ENVIRONMENT = "Development"
 dotnet run --project AgendaApi.Api
 ```
 
-La API arranca en `http://localhost:5000` — **solo local, sin exponer nada**.
-
-```
-📄 Cargando .env...
-   ✅ 20 variables cargadas
-📦 Restaurando paquetes...
-📦 Aplicando migraciones...
-═══════════════════════════════════════════
-   🚀 Iniciando AgendaApi...
-═══════════════════════════════════════════
-   Swagger:  http://localhost:5000/swagger
-   Health:   http://localhost:5000/health
+### 4. Probar
+```powershell
+curl.exe http://localhost:5000/health                      # → {"status":"healthy"}
+curl.exe http://localhost:5000/swagger                     # documentación interactiva
+.\scripts\test-webhook.ps1 -Message "Quiero agendar una cita"   # simula un cliente por WhatsApp
+.\scripts\test-full-flow.ps1                                # flujo completo automatizado
 ```
 
 ---
 
-## 🧪 Cómo Probar
+## 🔑 Configuración (el archivo `.env`)
 
-### Health check
+> ⚠️ **`.env` NO se sube a git** (está en `.gitignore`). Contiene secretos reales. Nunca lo publiques.
 
-```powershell
-curl.exe http://localhost:5000/health
-# → {"status":"healthy","timestamp":"...}
-```
+| Variable | Obligatorio | ¿Qué es? / Dónde obtenerla |
+|---|---|---|
+| `GROQ_API_KEY` | ✅ | API key de [Groq](https://console.groq.com). **Provider principal** |
+| `OPENAI_API_KEY` | ⚠️ | En [platform.openai.com](https://platform.openai.com/api-keys). Respaldo (debe ser una key real, no `sk-xxx`) |
+| `ANTHROPIC_API_KEY` | ❌ | Respaldo. [console.anthropic.com](https://console.anthropic.com) |
+| `ConnectionStrings__AgendaDb` | ✅ | Cadena de conexión SQL Server |
+| `JWT_SECRET` | ✅ | ≥32 caracteres. Firmado JWT |
+| `MASTER_KEY` | ✅ | Clave AES-256 para cifrar tokens OAuth. Generar `openssl rand -base64 32` |
+| `WHATSAPP_ACCESS_TOKEN` | ⚠️ | Token de Meta Cloud API |
+| `WHATSAPP_PHONE_NUMBER_ID` | ⚠️ | ID del número de WhatsApp en Meta |
+| `WHATSAPP_VERIFY_TOKEN` | ⚠️ | Token de verificación del webhook |
+| `GOOGLE_OAUTH_CLIENT_ID` | ⚠️ | Requisito ENABLED **Google Calendar sync** |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | ⚠️ | Requisito ENABLED **Google Calendar sync** |
+| `MS_OAUTH_CLIENT_ID` / `SECRET` | ❌ | Microsoft 365 (no configurado aún) |
+| `Calendar__TimeZone` | ❌ | Zona horaria del negocio. Default `America/Bogota` |
 
-### Swagger (navegador)
+> **Esquema de nombres**: en el código se usan `OpenAI__ApiKey`, `Groq__ApiKey`, `WhatssApp__AccessToken`, `GoogleOAuth__ClientId`, etc. Docker parsea las variables `.env`. mantenlo consistente.
 
-Abrir `http://localhost:5000/swagger` — documentación interactiva de todos los endpoints.
+---
 
-### Crear un tenant de prueba
+## 🗄️ Base de datos (¿dónde se gestiona la información?)
 
-```powershell
-curl.exe -X POST http://localhost:5000/api/tenants `
-  -H "Content-Type: application/json" `
-  -d '{"nombre":"Peluquería Canina Test","calendarProvider":"google"}'
-```
+**SQL Server 2022** con **EF Core** (Code-First, migraciones automáticas al iniciar). Un solo esquema `dbo` con tabla por entidad (**snake_case**), y **multi-tenant** mediante una columna `id_tenant` en cada tabla.
 
-### Listar tenants
+| Tabla | Guarda |
+|---|---|
+| `tenants` | Cada negocio/usuario. **Aquí se configura todo**: `calendar_provider`, `whatsapp_phone_number_id`, horarios |
+| `clients` | **Información del cliente**: nombre, WhatsApp, email. Se crea/actualiza al primera vez que escribe |
+| `service_types` | Servicios del negocio (Consulta General, Procedimiento Menor…) con duración, buffer y precio |
+| `availability_rules` | **Horarios de atención** por día de la semana (ej. Lun–Vie 09:00–18:00) |
+| `appointments` | Las citas: fecha inicio/fin, estado (`pending/confirmed/cancelled/…`), `external_event_id` (ID del evento en Google), recordatorio |
+| `calendar_connections` | Tokens OAuth de cada cliente+calendario, **cifrados (AES-256)** |
+| `availability_exceptions` | Excepciones puntuales de disponibilidad |
 
-```powershell
-curl.exe http://localhost:5000/api/tenants
-```
-
-### Simular un webhook de WhatsApp (sin WhatsApp real)
-
-```powershell
-.\scripts\test-webhook.ps1 -Message "Quiero agendar una cita"
-```
-
-### Flujo completo automatizado
-
-```powershell
-.\scripts\test-full-flow.ps1
-```
-
-Crea un tenant, agrega un servicio, simula un webhook y muestra los resultados.
+### Datos de ejemplo (seed)
+`scripts/seed-tenant-data.sql` llena `service_types` y `availability_rules` del tenant de prueba. Ejecútalo con `sqlcmd` contra el contenedor de SQL Server (ver "Acceso a la base" en `scripts/start-production.ps1`).
 
 ---
 
 ## 🌐 Producción
 
+### Topología (sin IP pública, sin abrir puertos)
+
+```
+Meta (WhatsApp) ──HTTPS──> api.adamcoia.com ──> Cloudflare Tunnel ──> localhost:8080 ──> API .NET
+                                                          └──────────────── Docker (SQL Server + API)
+```
+
 | Dato | Valor |
 |---|---|
 | **URL** | `https://api.adamcoia.com` |
-| **Swagger** | `https://api.adamcoia.com/swagger` |
 | **Servidor** | PC local (Windows 11 Home) |
 | **Virtualización** | WSL2 + Ubuntu 24.04 |
 | **Contenedores** | Docker Desktop |
-| **Base de datos** | SQL Server 2022 Express (Docker) |
-| **Túnel** | Cloudflare Tunnel (→ `api.adamcoia.com`) |
-| **DNS** | Cloudflare (Free) |
-| **Repositorio** | [github.com/rioskevin277-dev/Agenda-Citas](https://github.com/rioskevin277-dev/Agenda-Citas) |
+| **Base de datos** | SQL Server 2022 Express (contenedor `agenda-sqlserver`) |
+| **API** | .NET 8 (contenedor `agenda-api`) |
+| **Túnel** | Cloudflare Tunnel |
+| **DNS** | Cloudflare |
 
-### ¿Cómo funciona?
+### ⚠️ Gotcha de build (leer antes de desplegar)
+El `Dockerfile` **copia `publish_local/`** (el binario publicado), NO compila desde el código. Tras cada cambio:
 
+```bash
+# 1) Publicar el binario
+dotnet publish AgendaApi.Api/AgendaApi.Api.csproj -c Release -o publish_local
+
+# 2) Reconstruir el contenedor con el binario nuevo
+docker compose up -d --build api
 ```
-Usuario WhatsApp → Meta → api.adamcoia.com → Cloudflare Tunnel → localhost:8080 → API .NET
-```
 
-Sin IP pública, sin abrir puertos, 100% gratis.
+Si publicas sin el paso 1, el contenedor corre **código viejo** aunque el `--build` diga éxito.
 
 ### Iniciar producción
-
 ```powershell
 .\scripts\start-production.ps1
 ```
+(Levanta Docker + SQL Server + API + el túnel de Cloudflare.)
 
 O manualmente desde WSL:
 ```bash
@@ -139,83 +209,134 @@ docker compose up -d
 cloudflared tunnel run agenda-api
 ```
 
----
-
-## 🏗️ Arquitectura
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    AgendaApi.Api (Web API)                    │
-│  Controllers · Middleware · Program.cs · Swagger             │
-├──────────────────────────────────────────────────────────────┤
-│              AgendaApi.Application (Use Cases)               │
-│  CheckAvailability · CreateAppointment · CancelAppointment   │
-├──────────────────────────────────────────────────────────────┤
-│              AgendaApi.Domain (Core + Ports)                  │
-│  Entities: Tenant, Appointment, Client, ServiceType, ...     │
-│  Ports: ICalendarProvider, IMessagingProvider, repositorios  │
-├──────────────────────────────────────────────────────────────┤
-│          AgendaApi.Infrastructure (Adapters)                  │
-│  GoogleCalendarAdapter · MicrosoftGraphCalendarAdapter        │
-│  WhatsAppCloudApiAdapter · EF Core · Repositorios            │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### Stack
-
-| Capa | Tecnología |
-|---|---|
-| **Lenguaje** | C# 12 (.NET 8) |
-| **Base de datos** | SQL Server 2022 + EF Core 8 |
-| **Mensajería** | WhatsApp Cloud API (Meta) |
-| **Calendario** | Google Calendar API v3 / Microsoft Graph API |
-| **AI** | OpenAI GPT-4o-mini (+ Anthropic fallback) |
-| **Auth** | JWT Bearer |
-| **Logging** | Serilog |
-| **Documentación** | Swagger / OpenAPI |
+### Configurar el calendario en producción (Google Calendar
+1. Crea un **OAuth Client en Google Cloud** con redirect exacto `https://api.adamcoia.com/api/v1/oauth/google/callback`.
+2. Agenda las credenciales en `.env` (`GOOGLE_OAUTH_CLIENT_*`), re-publica y corre.
+3. Visita `https://api.adamcoia.com/api/v1/oauth/google/authorize?tenantId=<id-tenant>` y autoriza.
+4. El token queda guardado **cifrado** en `calendar_connections`.
 
 ---
 
-## 📋 Endpoints Principales
+## 🔌 API (endpoints)
 
 | Método | Ruta | Descripción |
 |---|---|---|
 | `GET` | `/health` | Health check |
-| `GET` | `/api/tenants` | Listar tenants |
 | `POST` | `/api/tenants` | Crear tenant |
+| `GET` | `/api/tenants` | Listar tenants |
 | `POST` | `/api/tenants/{id}/calendar-connection` | Conectar calendario |
-| `POST` | `/api/tenants/{id}/service-types` | Agregar servicio |
 | `GET` | `/api/appointments/availability` | Ver disponibilidad |
 | `POST` | `/api/appointments` | Crear cita |
 | `PUT` | `/api/appointments/{id}/reschedule` | Reprogramar |
 | `POST` | `/api/appointments/{id}/cancel` | Cancelar |
-| `GET/POST` | `/api/webhook` | Webhook WhatsApp |
+| `GET/POST` | `/api/appointments` | Webhook WhatsApp (`/api/v1/webhook`) |
+| `GET` | `/api/v1/oauth/google/authorize` | Iniciar OAuth Google |
+| `GET` | `/api/v1/oauth/google/callback` | Callback OAuth Google |
+
+Documentación interactiva completa en `/swagger`.
 
 ---
 
-## 📦 Estructura del Proyecto
+## 🏗️ Arquitectura (Arquitectura Limpia)
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    AgendaApi.Api (Web API)                    │
+│  Controllers · OAuth · Webhook · Middleware · Program.cs     │
+├──────────────────────────────────────────────────────────────┤
+│              AgendaApi.Application (Use Cases + DTOs)         │
+│  CheckAvailability · Create· Cancel· Confirm· Reschedule...  │
+├──────────────────────────────────────────────────────────────┤
+│              AgendaApi.Domain (Core + Ports)                  │
+│  Entities (Tenant, Appointment, Client, ServiceType...)      │
+│  Ports/interfaces: ICalendarProvider, IMessagingProvider,     │
+│                     repositorios (IUnitOfWork)               │
+├──────────────────────────────────────────────────────────────┤
+│          AgendaApi.Infrastructure (Adapters)                  │
+│  GoogleCalendarAdapter · MicrosoftGraphCalendarAdapter         │
+│  WhatsAppCloudApiAdapter · EF Core · AI providers (Groq,     │
+│  OpenAI, Anthropic) · Repositorios EF                       │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Stack tecnológico
+
+| Capa | Tecnología |
+|---|---|
+| Lenguaje | C# 12 (.NET 8) |
+| Base de datos | SQL Server 2022 + EF Core 8 |
+| Mensajería | WhatsApp Cloud API (Meta) |
+| Calendario | Google Calendar API v3 / Microsoft Graph |
+| IA (tool-calling) | Groq (principal) → OpenAI → Anthropic |
+| Auth | JWT Bearer |
+| Almacén de tokens | Cifrado AES-256 (tokens OAuth) |
+| Documentación | Swagger / OpenAPI |
+| Deploy | Docker Compose + WSL2 + Cloudflare Tunnel |
+
+### Zona horaria
+Las citas se guardan en hora local del negocio **disfrazada de UTC** (Google Calendar trabaja con UTC real). Por eso hay conversión en la frontera (`Calendar__TimeZone`, default `America/Bogota`). Esto se maneja dentro del adaptador de calendario.
+
+---
+
+## 📦 Estructura del proyecto
 
 ```
 AgendaApi.sln
 ├── AgendaApi.Domain/          # Entidades + interfaces (puertos)
-├── AgendaApi.Application/     # Casos de uso
-├── AgendaApi.Infrastructure/  # Adaptadores (EF Core, APIs externas)
-├── AgendaApi.Api/             # Host web (controllers, middleware)
-├── AgendaApi.Tests/           # Tests unitarios
+├── AgendaApi.Application/     # Casos de uso + DTOs
+├── AgendaApi.Infrastructure/  # Adaptadores (EF Core, Google, WhatsApp, AI)
+├── AgendaApi.Api/             # Host web (controllers, OAuth, webhook)
+├── AgendaApi.Tests/           # Tests unitarios (38 tests)
 ├── deploy/                    # Scripts de deploy
-├── scripts/                   # Scripts de utilidad
-├── docker-compose.yml         # Orquestación Docker
+├── scripts/                   # Scripts (start, seed, test webhook/full flow)
+├── docker-compose.yml         # Orquestación (sqlserver + api)
+├── Dockerfile                 # Copia publish_local/ (ver gotcha arriba)
 ├── run.ps1                    # Inicio local (carga .env + dotnet run)
-└── .env                       # Único archivo de configuración
+├── .env                       # Único archivo de configuración (NO a git)
+└── publish_local/              # Binario publicado (gitignored)
 ```
 
 ---
 
-## 📝 Notas
+## 🧪 Testing
 
-- **Multi-tenant**: Un solo schema, `id_tenant` GUID en cada tabla
-- **Cifrado**: Tokens OAuth cifrados con AES-256-GCM
-- **Rate limiting**: Buffer de 30s por usuario + dedup de mensajes
-- **Webhook WhatsApp**: Verificación mediante `WHATSAPP_VERIFY_TOKEN`
-- **Configuración**: Todo en un solo `.env` — compatible con Docker y desarrollo local
-- **Sin exponer**: Por defecto solo escucha en `localhost` — ningún endpoint es público
+```bash
+dotnet test AgendaApi.sln
+# 38/38 superados
+```
+
+Cubre casos de uso clave: disponibilidad, creación/cancelación/reprogramación/confirmación de citas.
+
+---
+
+## 🛠️ Solución de problemas
+
+**El bot responde “Lo siento, tuve un problema”**
+- La cadena de IA falló por completo:
+  - `OPENAI_API_KEY` está en `sk-xxx` (placeholder) → pon una real.
+  - No hay `GROQ_API_KEY`/`ANTHROPIC_API_KEY` configurada.
+  - El proveedor se quedó sin herramienta para la acción (ej. confirmar una cita).
+
+**Un servicio que pidió no existe**
+- La IA agrega solo los `service_types` reales del tenant. Revisa la tabla `service_types` para ese `id_tenant` (seed con `scripts/seed-tenant-data.sql`).
+
+**El recordatorio llega apenas se agenda**
+- La ventana es de 4 h. Si llegó justo después de agendar, es que la cita está a <4h de distancia (normal).
+
+**Los eventos de Google aparecen 5 horas corridos**
+- Problema de zona horaria en la frontera. Revisa que se use la lógica `FromGoogleInstant` / `LocalDateTimeToGoogleIso` en el adaptador (ya corregido).
+
+**`docker compose up` construye pero el cambio no aparece**
+- Vuelve a `dotnet publish -c Release -o publish_local` y después `docker compose up -d --build api`.
+
+---
+
+## ⚠️ Buenas prácticas de seguridad
+- **Nunca** subas `.env` o lo pegues en chats/README. Contiene: client secrets OAuth, JWT, claves de IA, contraseña SQL.
+- `.gitignore` debe incluir `.env` y `publish_local/`.
+- Rota las claves si alguna se filtró. Cambia `MASTER_KEY`/`JWT_SECRET` en **producción** (no uses las de ejemplo).
+
+---
+
+## 🔗 Repositorio
+https://github.com/rioskevin277-dev/Agenda-Citas

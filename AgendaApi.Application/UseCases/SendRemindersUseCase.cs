@@ -71,7 +71,8 @@ public class SendRemindersUseCase
                 await _messagingProvider.SendTextAsync(
                     client.WhatsApp,
                     $"⏰ Recordatorio: Tienes una cita agendada para el {fechaStr}.\n" +
-                    $"Responde CONFIRMAR para confirmar o CANCELAR para cancelar.",
+                    $"Responde CONFIRMAR para confirmar, CANCELAR para cancelarla o " +
+                    $"REAGENDAR para cambiar la fecha.",
                     ct);
 
                 appointment.RecordatorioEnviadoEn = DateTime.UtcNow;

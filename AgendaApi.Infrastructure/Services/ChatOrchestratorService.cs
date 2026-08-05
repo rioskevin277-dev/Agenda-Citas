@@ -175,6 +175,7 @@ public class ChatOrchestratorService
                 "check_availability" => await CheckAvailabilityAsync(args, services, tenantId, ct),
                 "create_appointment" => await CreateAppointmentAsync(args, services, tenantId, userPhone, clientName, ct),
                 "cancel_appointment" => await CancelAppointmentAsync(args, services, tenantId, ct),
+                "confirm_appointment" => await ConfirmAppointmentAsync(args, services, tenantId, ct),
                 "reschedule_appointment" => await RescheduleAppointmentAsync(args, services, tenantId, ct),
                 "list_appointments" => await ListAppointmentsAsync(args, services, tenantId, ct),
                 _ => "{\"error\":\"Tool desconocida: " + toolName + "\"}"
@@ -227,11 +228,13 @@ REGLAS IMPORTANTES:
 1. Se amable y profesional — Saluda al cliente, presentate como el asistente virtual del negocio.
 2. Siempre verifica disponibilidad ANTES de agendar — usa check_availability primero.
 3. Confirma los datos con el cliente antes de crear una cita — nunca asumas.
+3.5 REGLA DE CANCELACIÓN: cuando el cliente pida CANCELAR una cita, cancélala y termina el turno ahí. NO vuelvas a agendar ni reagendes la misma cita a menos que el cliente lo pida explícitamente en un mensaje NUEVO. Cancelar y reagendar en el mismo turno es un error grave.
 4. Formatea fechas y horarios de forma clara y amigable (ej: 'jueves 15 de agosto a las 10:00 hs').
 5. Si el cliente no especifica un tipo de servicio, preguntale cual desea o sugiere los disponibles.
-6. Idioma: responde SIEMPRE en espanol, en el mismo tono del cliente.
+6. Idioma: responde espanol siempre, en el mismo tono del cliente.
 7. Mantene las respuestas concisas — son mensajes de WhatsApp, no correos electronicos.
 8. Si hay un error, disculpate y ofrece alternativas.
+8.5 RESPONDIENDO AL RECORDATORIO: si el cliente responde CONFIRMAR, usa confirm_appointment (identifica la cita con su WhatsApp y confirma la proxima). Si dice REAGENDAR (o ""cambiar fecha""), preguntale la nueva fecha/hora, usa check_availability y luego reschedule_appointment. Si dice CANCELAR, usa cancel_appointment. Tras CONFIRMAR o CANCELAR termina el turno; tras REAGENDAR confirma la nueva fecha.
 
 CLIENTE ACTUAL:
 " + senderIdentity + @"
@@ -247,6 +250,7 @@ HERRAMIENTAS DISPONIBLES:
 - check_availability: Consultar horarios disponibles
 - create_appointment: Agendar una cita
 - cancel_appointment: Cancelar una cita existente
+- confirm_appointment: Confirmar una cita (cliente respondio CONFIRMAR)
 - reschedule_appointment: Reprogramar una cita
 - list_appointments: Listar las citas del cliente";
     }
@@ -371,6 +375,34 @@ HERRAMIENTAS DISPONIBLES:
         });
     }
 
+    private async Task<string> ConfirmAppointmentAsync(
+        JsonElement args,
+        IServiceProvider services,
+        Guid tenantId,
+        CancellationToken ct)
+    {
+        var useCase = services.GetRequiredService<Application.UseCases.ConfirmAppointmentUseCase>();
+        var identifier = args.GetProperty("appointment_identifier").GetString()!;
+
+        var dto = new Application.DTOs.AppointmentCancelDto
+        {
+            AppointmentIdentifier = identifier,
+            TenantId = tenantId
+        };
+
+        var response = await useCase.ExecuteAsync(dto, ct);
+
+        return JsonSerializer.Serialize(new
+        {
+            success = response != null,
+            appointment = response == null ? null : new
+            {
+                id = response.Id,
+                status = response.Status
+            }
+        });
+    }
+
     private async Task<string> RescheduleAppointmentAsync(
         JsonElement args,
         IServiceProvider services,
@@ -378,9 +410,17 @@ HERRAMIENTAS DISPONIBLES:
         CancellationToken ct)
     {
         var useCase = services.GetRequiredService<Application.UseCases.RescheduleAppointmentUseCase>();
+
+        // El modelo puede pasar el ID real de la cita o, más a menudo, el WhatsApp del
+        // cliente (tiende a inventar IDs). Si lo pasado no es un GUID válido, se resuelve
+        // por WhatsApp en el caso de uso.
+        var idArg = args.GetProperty("appointment_id").GetString()!;
+        var parsedId = Guid.TryParse(idArg, out var realId) ? realId : Guid.Empty;
+
         var dto = new Application.DTOs.AppointmentRescheduleDto
         {
-            AppointmentId = Guid.Parse(args.GetProperty("appointment_id").GetString()!),
+            AppointmentId = parsedId,
+            AppointmentIdentifier = parsedId == Guid.Empty ? idArg : null,
             TenantId = tenantId,
             NuevaFechaInicio = DateTime.Parse(args.GetProperty("nueva_fecha_inicio").GetString()!)
         };

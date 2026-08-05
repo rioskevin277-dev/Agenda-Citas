@@ -50,13 +50,24 @@ public class AppointmentRepository : IAppointmentRepository
 
     public async Task<List<Appointment>> GetPendingRemindersAsync(CancellationToken ct = default)
     {
-        var now = DateTime.UtcNow;
-        var in24Hours = now.AddHours(24);
+        // La app guarda las citas en hora local del negocio "disfrazada de UTC"
+        // (un evento de las 14:00 en Colombia se almacena como 14:00Z). Por eso el "ahora"
+        // también se debe convertir a la zona del negocio y marcar como UTC, igual que hace
+        // GoogleCalendarAdapter, para que la ventana de 4 horas sea real y no se desfase 5h.
+        var colombiaNow = TimeZoneInfo.ConvertTimeFromUtc(
+            DateTime.UtcNow,
+            TimeZoneInfo.FindSystemTimeZoneById(
+                Environment.GetEnvironmentVariable("Calendar__TimeZone") ?? "America/Bogota"));
+        var now = DateTime.SpecifyKind(colombiaNow, DateTimeKind.Utc);
+
+        // Recordatorio ~4 horas antes de la cita (antes estaba en 24h, lo que disparaba
+        // avisos apenas se agendaba la cita).
+        var in4Hours = now.AddHours(4);
 
         return await _context.Appointments
             .Where(a => (a.Estado == "pending" || a.Estado == "confirmed")
                         && a.FechaInicio > now
-                        && a.FechaInicio <= in24Hours
+                        && a.FechaInicio <= in4Hours
                         && a.RecordatorioEnviadoEn == null)
             .ToListAsync(ct);
     }

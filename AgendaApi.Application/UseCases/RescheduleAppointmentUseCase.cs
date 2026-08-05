@@ -41,7 +41,32 @@ public class RescheduleAppointmentUseCase
 
     public async Task<AppointmentResponseDto?> ExecuteAsync(AppointmentRescheduleDto dto, CancellationToken ct = default)
     {
-        var appointment = await _appointmentRepo.GetByIdAsync(dto.AppointmentId, ct);
+        Domain.Entities.Appointment? appointment = null;
+
+        if (dto.AppointmentId != Guid.Empty)
+        {
+            appointment = await _appointmentRepo.GetByIdAsync(dto.AppointmentId, ct);
+        }
+        else if (!string.IsNullOrWhiteSpace(dto.AppointmentIdentifier))
+        {
+            // El modelo no siempre tiene el ID real de la cita (tiende a inventar IDs).
+            // Por ello se permite identificar la cita por el WhatsApp del cliente,
+            // reprogrando la próxima cita pendiente/confirmada.
+            var client = await _clientRepo.GetByWhatsAppAsync(dto.AppointmentIdentifier, dto.TenantId, ct);
+            if (client != null)
+            {
+                var clientAppointments = await _appointmentRepo.GetByClientIdAsync(client.IdClient, ct);
+                appointment = clientAppointments
+                    .Where(a => a.Estado == "pending" || a.Estado == "confirmed")
+                    .OrderBy(a => a.FechaInicio)
+                    .FirstOrDefault();
+            }
+            else if (Guid.TryParse(dto.AppointmentIdentifier, out var parsedId))
+            {
+                appointment = await _appointmentRepo.GetByIdAsync(parsedId, ct);
+            }
+        }
+
         if (appointment == null)
             throw new InvalidOperationException("Cita no encontrada");
         if (appointment.Estado == "cancelled")

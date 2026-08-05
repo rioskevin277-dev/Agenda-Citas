@@ -168,7 +168,14 @@ public class OpenAIProvider : IAiProvider
         // Fallback: read from config (set via environment variable or appsettings)
         var envKey = Environment.GetEnvironmentVariable("OpenAI__ApiKey");
         if (!string.IsNullOrWhiteSpace(envKey))
+        {
+            // No gastar una llamada HTTP (401) si la key es el placeholder de ejemplo.
+            // Detectar keys placeholder hace que el fallback a Anthropic/Groq sea rápido opcional si la hay.
+            if (envKey.Contains("xxx", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    "OpenAI API Key parece ser un placeholder (contiene 'xxx'). Configurar una key real en OpenAI__ApiKey");
             return envKey;
+        }
 
         throw new InvalidOperationException("No se encontró OpenAI API Key. Configurar OpenAI__ApiKey");
     }
