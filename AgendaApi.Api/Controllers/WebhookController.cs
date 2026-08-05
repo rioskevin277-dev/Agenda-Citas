@@ -80,6 +80,7 @@ public class WebhookController : ControllerBase
                 await _messageBuffer.EnqueueMessageAsync(
                     msg.ExternalMessageId,
                     msg.From,
+                    msg.FromName,
                     msg.Content,
                     msg.MediaType,
                     msg.MediaUrl,

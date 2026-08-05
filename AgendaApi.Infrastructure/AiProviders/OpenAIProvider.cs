@@ -76,13 +76,7 @@ public class OpenAIProvider : IAiProvider
         var body = new
         {
             model = Model,
-            messages = messages.Select(m => new
-            {
-                role = m.Role,
-                content = m.Content,
-                tool_call_id = m.Role == "tool" ? m.ToolCallId : null,
-                name = m.Role == "tool" ? m.ToolName : null
-            }).ToList(),
+            messages = messages.Select(MapOpenAiMessage).ToList(),
             tools = tools,
             tool_choice = "auto"
         };
@@ -130,6 +124,34 @@ public class OpenAIProvider : IAiProvider
             TextContent = message?.Content ?? "",
             FinishReason = "stop"
         };
+    }
+
+    /// <summary>
+    /// Serializa un ChatMessage al formato OpenAI-compatible.
+    /// - Rol "tool": incluye tool_call_id y name.
+    /// - Rol "assistant" con ToolCalls: reenvía el array tool_calls (obligatorio para continuar).
+    /// </summary>
+    private static object MapOpenAiMessage(ChatMessage m)
+    {
+        if (m.Role == "tool")
+            return new { role = "tool", content = m.Content, tool_call_id = m.ToolCallId, name = m.ToolName };
+
+        if (m.Role == "assistant" && m.ToolCalls.Count > 0)
+        {
+            return new
+            {
+                role = "assistant",
+                content = m.Content,
+                tool_calls = m.ToolCalls.Select(tc => new
+                {
+                    id = tc.Id,
+                    type = "function",
+                    function = new { name = tc.Name, arguments = tc.Arguments }
+                })
+            };
+        }
+
+        return new { role = m.Role, content = m.Content };
     }
 
     private string GetApiKey()

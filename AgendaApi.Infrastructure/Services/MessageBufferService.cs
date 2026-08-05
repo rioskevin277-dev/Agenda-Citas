@@ -49,6 +49,7 @@ public class MessageBufferService : BackgroundService
     public async Task EnqueueMessageAsync(
         string externalMessageId,
         string from,
+        string? fromName,
         string content,
         string? mediaType,
         string? mediaUrl,
@@ -59,6 +60,7 @@ public class MessageBufferService : BackgroundService
         {
             ExternalMessageId = externalMessageId,
             From = from,
+            FromName = fromName,
             Content = content,
             MediaType = mediaType,
             MediaUrl = mediaUrl,
@@ -168,12 +170,14 @@ public class MessageBufferService : BackgroundService
 
             var lastMsg = buffer.Messages.Last();
             var tenantId = lastMsg.TenantId;
+            var clientName = lastMsg.FromName;
 
             await orchestrator.ProcessMessageAsync(
                 from,
                 fullContent,
                 tenantId,
-                ct);
+                ct,
+                clientName);
         }
         catch (Exception ex)
         {
@@ -227,6 +231,7 @@ public class MessageBufferService : BackgroundService
     {
         public string ExternalMessageId { get; set; } = string.Empty;
         public string From { get; set; } = string.Empty;
+        public string? FromName { get; set; }
         public string Content { get; set; } = string.Empty;
         public string? MediaType { get; set; }
         public string? MediaUrl { get; set; }

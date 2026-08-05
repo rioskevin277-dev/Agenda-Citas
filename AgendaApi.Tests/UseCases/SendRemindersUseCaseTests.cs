@@ -11,6 +11,8 @@ public class SendRemindersUseCaseTests
 {
     private readonly Mock<IAppointmentRepository> _appointmentRepo = new();
     private readonly Mock<IClientRepository> _clientRepo = new();
+    private readonly Mock<ITenantRepository> _tenantRepo = new();
+    private readonly Mock<ITenantContext> _tenantContext = new();
     private readonly Mock<ICalendarProviderFactory> _providerFactory = new();
     private readonly Mock<ICalendarConnectionRepository> _connectionRepo = new();
     private readonly Mock<IMessagingProvider> _messagingProvider = new();
@@ -21,9 +23,20 @@ public class SendRemindersUseCaseTests
 
     public SendRemindersUseCaseTests()
     {
+        // Por defecto cualquier cita resuelve un tenant válido (necesario para configurar el contexto de envío).
+        _tenantRepo.Setup(r => r.GetByIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Tenant
+            {
+                IdTenant = Guid.NewGuid(),
+                CalendarProvider = "google",
+                WhatsAppPhoneNumberId = "111111111111111"
+            });
+
         _useCase = new SendRemindersUseCase(
             _appointmentRepo.Object,
             _clientRepo.Object,
+            _tenantRepo.Object,
+            _tenantContext.Object,
             _providerFactory.Object,
             _connectionRepo.Object,
             _messagingProvider.Object,

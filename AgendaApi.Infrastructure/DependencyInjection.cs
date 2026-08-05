@@ -97,6 +97,10 @@ public static class DependencyInjection
         // Message Buffer + Chat Orchestrator
         services.AddSingleton<MessageBufferService>();
         services.AddHostedService<MessageBufferService>(sp => sp.GetRequiredService<MessageBufferService>());
+
+        // Memoria de conversación (contexto entre mensajes)
+        services.AddSingleton<ConversationMemoryService>();
+
         services.AddScoped<ChatOrchestratorService>();
 
         return services;

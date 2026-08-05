@@ -77,15 +77,7 @@ public class AnthropicProvider : IAiProvider
 
         // Extract system prompt and non-system messages
         string? systemPrompt = null;
-        var nonSystemMessages = new List<object>();
-
-        foreach (var msg in messages)
-        {
-            if (msg.Role == "system")
-                systemPrompt = msg.Content;
-            else
-                nonSystemMessages.Add(new { role = msg.Role, content = msg.Content });
-        }
+        var nonSystemMessages = BuildAnthropicMessages(messages, ref systemPrompt);
 
         var bodyObj = new Dictionary<string, object>
         {
@@ -156,6 +148,77 @@ public class AnthropicProvider : IAiProvider
             FinishReason = finishReason,
             ToolCalls = toolCalls
         };
+    }
+
+    /// <summary>
+    /// Convierte la conversación unificada al formato Anthropic:
+    /// - assistant con ToolCalls → content blocks type="tool_use" (id, name, input).
+    /// - rol "tool" → mensaje user con content block type="tool_result" (tool_use_id).
+    ///   Varios tool_results seguidos se agrupan en un solo mensaje user (Anthropic exige roles alternados).
+    /// </summary>
+    private static List<object> BuildAnthropicMessages(List<ChatMessage> messages, ref string? systemPrompt)
+    {
+        // entries: role + content (string para texto plano, List<object> para content blocks)
+        var entries = new List<(string Role, object Content)>();
+
+        foreach (var msg in messages)
+        {
+            if (msg.Role == "system")
+            {
+                systemPrompt = msg.Content;
+                continue;
+            }
+
+            if (msg.Role == "tool")
+            {
+                var block = new
+                {
+                    type = "tool_result",
+                    tool_use_id = msg.ToolCallId,
+                    content = msg.Content
+                };
+
+                // Agrupar con un mensaje user previo que solo contenga tool_result
+                if (entries.Count > 0 && entries[^1].Role == "user" && entries[^1].Content is List<object> prevBlocks
+                    && prevBlocks.All(b => (b as dynamic)?.type == "tool_result"))
+                {
+                    prevBlocks.Add(block);
+                }
+                else
+                {
+                    entries.Add(("user", new List<object> { block }));
+                }
+                continue;
+            }
+
+            if (msg.Role == "assistant" && msg.ToolCalls.Count > 0)
+            {
+                var blocks = new List<object>();
+                if (!string.IsNullOrWhiteSpace(msg.Content))
+                    blocks.Add(new { type = "text", text = msg.Content });
+
+                foreach (var tc in msg.ToolCalls)
+                {
+                    using var doc = JsonDocument.Parse(tc.Arguments);
+                    blocks.Add(new
+                    {
+                        type = "tool_use",
+                        id = tc.Id,
+                        name = tc.Name,
+                        input = doc.RootElement.Clone()
+                    });
+                }
+
+                entries.Add(("assistant", blocks));
+                continue;
+            }
+
+            entries.Add((msg.Role, msg.Content));
+        }
+
+        return entries
+            .Select(e => (object)new { role = e.Role, content = e.Content })
+            .ToList();
     }
 
     private string GetApiKey()

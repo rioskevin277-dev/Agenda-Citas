@@ -10,15 +10,18 @@ namespace AgendaApi.Infrastructure.Services;
 public class ChatOrchestratorService
 {
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ConversationMemoryService _conversationMemory;
     private readonly ILogger<ChatOrchestratorService> _logger;
 
     private const int MaxToolIterations = 5;
 
     public ChatOrchestratorService(
         IServiceScopeFactory scopeFactory,
+        ConversationMemoryService conversationMemory,
         ILogger<ChatOrchestratorService> logger)
     {
         _scopeFactory = scopeFactory;
+        _conversationMemory = conversationMemory;
         _logger = logger;
     }
 
@@ -26,7 +29,8 @@ public class ChatOrchestratorService
         string userPhone,
         string messageContent,
         Guid tenantId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? clientName = null)
     {
         using var scope = _scopeFactory.CreateScope();
         var services = scope.ServiceProvider;
@@ -55,13 +59,13 @@ public class ChatOrchestratorService
         _logger.LogInformation("[Orchestrator] Procesando mensaje de {Phone} para tenant {Tenant}",
             userPhone, tenantId);
 
-        var systemPrompt = GetSystemPrompt();
+        var systemPrompt = GetSystemPrompt(userPhone, clientName);
 
-        var messages = new List<ChatMessage>
-        {
-            new() { Role = "system", Content = systemPrompt },
-            new() { Role = "user", Content = messageContent }
-        };
+        // Cargar historial previo de la conversación (si existe) para conservar contexto.
+        var conversationKey = ConversationMemoryService.GetKey(tenantId, userPhone);
+        var messages = _conversationMemory.GetHistory(conversationKey, systemPrompt);
+        messages.Add(new ChatMessage { Role = "user", Content = messageContent });
+        _conversationMemory.AddUser(conversationKey, messageContent);
 
         for (int iteration = 0; iteration < MaxToolIterations; iteration++)
         {
@@ -93,12 +97,23 @@ public class ChatOrchestratorService
             if (usedProvider == null)
             {
                 _logger.LogError("[Orchestrator] Todos los proveedores fallaron: {Error}", result.TextContent);
-                await messaging.SendTextAsync(userPhone, "Lo siento, tuve un problema. Por favor intenta mas tarde.");
+                const string errorText = "Lo siento, tuve un problema. Por favor intenta mas tarde.";
+                await messaging.SendTextAsync(userPhone, errorText);
+                _conversationMemory.AddAssistant(conversationKey, errorText);
                 return;
             }
             _logger.LogInformation("[Orchestrator] Respondiendo con {Provider}", usedProvider);
 
-            if (!string.IsNullOrWhiteSpace(result.TextContent))
+            // El mensaje del asistente SIEMPRE se agrega cuando hay tool_calls (aunque el texto sea vacío),
+            // y debe incluir la lista de tool_calls — las APIs de OpenAI/Groq la exigen en la siguiente
+            // iteración para poder correlacionar los resultados de las herramientas.
+            if (result.ToolCalls is { Count: > 0 })
+            {
+                var assistantMsg = new ChatMessage { Role = "assistant", Content = result.TextContent ?? "" };
+                assistantMsg.ToolCalls.AddRange(result.ToolCalls);
+                messages.Add(assistantMsg);
+            }
+            else if (!string.IsNullOrWhiteSpace(result.TextContent))
             {
                 messages.Add(new ChatMessage { Role = "assistant", Content = result.TextContent });
             }
@@ -109,6 +124,7 @@ public class ChatOrchestratorService
 
                 var responseText = result.TextContent ?? "En que mas puedo ayudarte?";
                 await messaging.SendTextAsync(userPhone, responseText);
+                _conversationMemory.AddAssistant(conversationKey, responseText);
                 return;
             }
 
@@ -117,7 +133,7 @@ public class ChatOrchestratorService
                 _logger.LogInformation("[Orchestrator] Ejecutando tool: {Name}({Args})",
                     toolCall.Name, toolCall.Arguments);
 
-                var toolResult = await ExecuteToolAsync(toolCall.Name, toolCall.Arguments, services, tenantId, ct);
+                var toolResult = await ExecuteToolAsync(toolCall.Name, toolCall.Arguments, services, tenantId, userPhone, clientName, ct);
 
                 messages.Add(new ChatMessage
                 {
@@ -130,8 +146,9 @@ public class ChatOrchestratorService
         }
 
         _logger.LogWarning("[Orchestrator] Maximo de iteraciones alcanzado ({Max})", MaxToolIterations);
-        await messaging.SendTextAsync(userPhone,
-            "Estoy procesando tu solicitud. Un asesor te contactara pronto para confirmar.");
+        const string maxIterText = "Estoy procesando tu solicitud. Un asesor te contactara pronto para confirmar.";
+        await messaging.SendTextAsync(userPhone, maxIterText);
+        _conversationMemory.AddAssistant(conversationKey, maxIterText);
     }
 
     private async Task<string> ExecuteToolAsync(
@@ -139,6 +156,8 @@ public class ChatOrchestratorService
         string argumentsJson,
         IServiceProvider services,
         Guid tenantId,
+        string userPhone,
+        string? clientName,
         CancellationToken ct)
     {
         try
@@ -149,7 +168,7 @@ public class ChatOrchestratorService
             return toolName switch
             {
                 "check_availability" => await CheckAvailabilityAsync(args, services, tenantId, ct),
-                "create_appointment" => await CreateAppointmentAsync(args, services, tenantId, ct),
+                "create_appointment" => await CreateAppointmentAsync(args, services, tenantId, userPhone, clientName, ct),
                 "cancel_appointment" => await CancelAppointmentAsync(args, services, tenantId, ct),
                 "reschedule_appointment" => await RescheduleAppointmentAsync(args, services, tenantId, ct),
                 "list_appointments" => await ListAppointmentsAsync(args, services, tenantId, ct),
@@ -168,8 +187,25 @@ public class ChatOrchestratorService
         }
     }
 
-    private static string GetSystemPrompt()
+    private static string GetSystemPrompt(string userPhone, string? clientName = null)
     {
+        string senderIdentity = string.IsNullOrWhiteSpace(clientName)
+            ? $"El cliente que te escribe tiene el WhatsApp {userPhone}."
+            : $"El cliente que te escribe se llama {clientName} y su WhatsApp es {userPhone}.";
+
+        // Inyectar la fecha actual: los LLM no conocen la fecha real y tienden a hibernar el año
+        // (en producción llegaron a generar 2024 para "el viernes"). Con la fecha como referencia
+        // calculan horizontes futuros correctos. Se usa cultura es-ES para nombres de día/mes fijos.
+        var cult = System.Globalization.CultureInfo.GetCultureInfo("es-ES");
+        var now = DateTime.Now;
+        string hoy = now.ToString("dddd, dd 'de' MMMM 'de' yyyy", cult).ToLowerInvariant();
+        string fechaReferencia = $@"
+
+FECHA ACTUAL (OBLIGATORIO USARLA COMO REFERENCIA):
+- Hoy es {hoy}.
+- Cuando el cliente diga 'hoy', 'manana', un dia de la semana (p/ej. 'viernes') o una hora sin fecha completa, calcula la fecha REAL futura partiendo de hoy. Usa SIEMPRE el ano actual ({now.Year}) o el siguiente si la fecha ya paso.
+- JAMAS uses anos pasados (como 2024) ni inventes fechas. Si no puedes resolver el dia correctamente, pregunta al cliente en lugar de asumir.
+";
         return @"Eres un asistente virtual de agendamiento de citas para un negocio local. Tu funcion es ayudar a los clientes a agendar, consultar, reprogramar o cancelar citas a traves de WhatsApp.
 
 REGLAS IMPORTANTES:
@@ -177,10 +213,19 @@ REGLAS IMPORTANTES:
 2. Siempre verifica disponibilidad ANTES de agendar — usa check_availability primero.
 3. Confirma los datos con el cliente antes de crear una cita — nunca asumas.
 4. Formatea fechas y horarios de forma clara y amigable (ej: 'jueves 15 de agosto a las 10:00 hs').
-5. Si el cliente no especifica un tipo de servicio, preguntale cual desea.
+5. Si el cliente no especifica un tipo de servicio, preguntale cual desea o sugiere los disponibles.
 6. Idioma: responde SIEMPRE en espanol, en el mismo tono del cliente.
 7. Mantene las respuestas concisas — son mensajes de WhatsApp, no correos electronicos.
 8. Si hay un error, disculpate y ofrece alternativas.
+
+CLIENTE ACTUAL:
+" + senderIdentity + @"
+" + fechaReferencia + @"
+
+REGLAS CRITICAS SOBRE LOS DATOS DEL CLIENTE:
+- El WhatsApp del cliente SIEMPRE es el numero real " + userPhone + @". NUNCA lo inventes ni uses numeros de ejemplo (como 1234567890).
+- Cuando la herramienta create_appointment pida client_whatsapp, usa SIEMPRE " + userPhone + @".
+- Usa el nombre del cliente solo si lo confirmo en la conversacion; si no lo sabes, no lo inventes.
 
 HERRAMIENTAS DISPONIBLES:
 - check_availability: Consultar horarios disponibles
@@ -234,17 +279,28 @@ HERRAMIENTAS DISPONIBLES:
         JsonElement args,
         IServiceProvider services,
         Guid tenantId,
+        string userPhone,
+        string? clientName,
         CancellationToken ct)
     {
         var useCase = services.GetRequiredService<Application.UseCases.CreateAppointmentUseCase>();
+
+        // El cliente que está escribiendo ES el dueño de la cita: su WhatsApp es el del remitente
+        // real, sin excepciones (los LLM tienden a inventar números como 1234567890, lo que rompe
+        // la entrega). El nombre sólo se usa si viene de la conversación confirmada.
+        string? modelName = args.TryGetProperty("client_name", out var n) ? n.GetString() : null;
+        var resolvedName = !string.IsNullOrWhiteSpace(modelName)
+            ? modelName
+            : (!string.IsNullOrWhiteSpace(clientName) ? clientName : userPhone);
+
         var dto = new Application.DTOs.AppointmentCreateDto
         {
             TenantId = tenantId,
-            ClientWhatsApp = args.GetProperty("client_whatsapp").GetString()!,
-            ClientName = args.GetProperty("client_name").GetString()!,
+            ClientWhatsApp = userPhone,
+            ClientName = resolvedName!,
             ServiceTypeName = args.GetProperty("service_type_name").GetString()!,
             FechaInicio = DateTime.Parse(args.GetProperty("fecha_inicio").GetString()!),
-            Notas = args.TryGetProperty("notas", out var n) ? n.GetString() : null
+            Notas = args.TryGetProperty("notas", out var notas) ? notas.GetString() : null
         };
 
         var response = await useCase.ExecuteAsync(dto, ct);

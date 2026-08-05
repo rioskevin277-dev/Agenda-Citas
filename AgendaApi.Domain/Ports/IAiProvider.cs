@@ -24,6 +24,12 @@ public class ChatMessage
     public string? ToolCallId { get; set; }
     public string? ToolName { get; set; }
     public string? ToolArguments { get; set; }
+
+    /// <summary>
+    /// tool_calls que el modelo pidió Y que deben reenviarse en la siguiente iteración
+    /// (requisito de OpenAI/Groq cuando hay mensajes de rol "tool" con tool_call_id).
+    /// </summary>
+    public List<ToolCall> ToolCalls { get; set; } = new();
 }
 
 public class AiToolCallResult
