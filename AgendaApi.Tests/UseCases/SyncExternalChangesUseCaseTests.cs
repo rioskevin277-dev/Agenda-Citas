@@ -124,19 +124,27 @@ public class SyncExternalChangesUseCaseTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_WhenNoSyncToken_ReturnsZero()
+    public async Task ExecuteAsync_WhenNoSyncToken_BootstrapsInitialDeltaSync()
     {
-        // Arrange
-        var connection = new CalendarConnection { IdTenant = Guid.NewGuid(), Activo = true, SyncToken = null };
-        _connectionRepo.Setup(r => r.GetByTenantIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+        // Arrange: sin SyncToken -> el use case debe hacer el primer delta sync (full)
+        // que el provider usa para persistir el primer token (bootstrap incremental).
+        var tenantId = Guid.NewGuid();
+        var connection = new CalendarConnection { IdTenant = tenantId, Activo = true, SyncToken = null };
+        _connectionRepo.Setup(r => r.GetByTenantIdAsync(tenantId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(connection);
+        _providerFactory.Setup(f => f.GetProviderAsync(tenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(_calendarProvider.Object);
+        _calendarProvider.Setup(p => p.GetChangesAsync(tenantId, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ExternalCalendarChange>());
 
         // Act
-        var count = await _useCase.ExecuteAsync(Guid.NewGuid());
+        var count = await _useCase.ExecuteAsync(tenantId);
 
-        // Assert
+        // Assert: delta sync se ejecuta (y el provider persiste el primer token)
         count.Should().Be(0);
-        _providerFactory.Verify(f => f.GetProviderAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _providerFactory.Verify(f => f.GetProviderAsync(tenantId, It.IsAny<CancellationToken>()), Times.Once);
+        _calendarProvider.Verify(p => p.GetChangesAsync(tenantId, It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()));
     }
 
     [Fact]

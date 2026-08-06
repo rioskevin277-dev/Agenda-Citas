@@ -16,6 +16,51 @@ public class MicrosoftGraphCalendarAdapter : ICalendarProvider
 {
     public string ProviderName => "microsoft";
 
+    // Zona horaria del negocio (Colombia por defecto, UTC-5, sin horario de verano).
+    // Internamente la app guarda las horas locales tratadas como si fueran UTC
+    // (las reglas 09:00–18:00 se almacenan como 09:00Z). Microsoft Graph, igual que
+    // Google, trabaja con instantes UTC reales. Por eso hay que convertir en la
+    // frontera: instante real (Graph) -> hora local al leer, y hora local -> instante
+    // real al crear/actualizar eventos. Configurable vía "Calendar__TimeZone".
+    private static readonly TimeZoneInfo BusinessTimeZone =
+        TimeZoneInfo.FindSystemTimeZoneById(
+            Environment.GetEnvironmentVariable("Calendar__TimeZone") ?? "America/Bogota");
+
+    /// <summary>
+    /// Microsoft Graph devuelve instantes UTC (o con offset). Convertimos ese instante
+    /// absoluto a la hora local del negocio, pero la guardamos "disfrazada de UTC" para
+    /// que cuadre con el resto de la app (que trata horas locales como UTC). Retorna un
+    /// DateTime cuyo valor es la hora local, con Kind=Utc.
+    /// </summary>
+    private static DateTime FromGraphInstant(string? dateTime, string? dateOnly)
+    {
+        if (!string.IsNullOrEmpty(dateTime))
+        {
+            // DateTime.Parse interpreta el offset del string y devuelve el instante
+            // en la zona local de la máquina (el contenedor corre en UTC).
+            var instant = DateTime.Parse(dateTime);
+            var local = TimeZoneInfo.ConvertTimeFromUtc(
+                DateTime.SpecifyKind(instant, DateTimeKind.Utc), BusinessTimeZone);
+            return DateTime.SpecifyKind(local, DateTimeKind.Utc);
+        }
+
+        if (!string.IsNullOrEmpty(dateOnly))
+            return DateOnly.Parse(dateOnly).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+
+        return DateTime.MinValue;
+    }
+
+    /// <summary>
+    /// Convierte una fecha interna de la app (hora local "disfrazada de UTC") al instante
+    /// UTC real que espera Microsoft Graph. Se usa al crear o actualizar eventos.
+    /// </summary>
+    private static string LocalDateTimeToGraphIso(DateTime local)
+    {
+        var utc = TimeZoneInfo.ConvertTimeToUtc(
+            DateTime.SpecifyKind(local, DateTimeKind.Unspecified), BusinessTimeZone);
+        return utc.ToString("o");
+    }
+
     private readonly HttpClient _httpClient;
     private readonly ICalendarConnectionRepository _connectionRepo;
     private readonly ITokenEncryptionService _tokenEncryption;
@@ -62,8 +107,8 @@ public class MicrosoftGraphCalendarAdapter : ICalendarProvider
             .Where(e => e.Start != null && e.End != null)
             .Select(e => new TimeSlot
             {
-                FechaInicio = DateTime.Parse(e.Start!.DateTime),
-                FechaFin = DateTime.Parse(e.End!.DateTime),
+                FechaInicio = FromGraphInstant(e.Start!.DateTime, e.Start.Date),
+                FechaFin = FromGraphInstant(e.End!.DateTime, e.End.Date),
                 Disponible = false,
                 ExternalEventId = e.Id
             })
@@ -78,8 +123,8 @@ public class MicrosoftGraphCalendarAdapter : ICalendarProvider
         {
             subject = $"Cita: {appointment.Notas ?? "Agendada"}",
             body = new { contentType = "text", content = appointment.Notas ?? "" },
-            start = new { dateTime = appointment.FechaInicio.ToString("o"), timeZone = "UTC" },
-            end = new { dateTime = appointment.FechaFin.ToString("o"), timeZone = "UTC" }
+            start = new { dateTime = LocalDateTimeToGraphIso(appointment.FechaInicio), timeZone = "UTC" },
+            end = new { dateTime = LocalDateTimeToGraphIso(appointment.FechaFin), timeZone = "UTC" }
         };
 
         var url = $"{GraphApiBase}/me/calendar/events";
@@ -101,8 +146,8 @@ public class MicrosoftGraphCalendarAdapter : ICalendarProvider
         var eventBody = new
         {
             subject = $"Cita: {appointment.Notas ?? "Actualizada"}",
-            start = new { dateTime = appointment.FechaInicio.ToString("o"), timeZone = "UTC" },
-            end = new { dateTime = appointment.FechaFin.ToString("o"), timeZone = "UTC" }
+            start = new { dateTime = LocalDateTimeToGraphIso(appointment.FechaInicio), timeZone = "UTC" },
+            end = new { dateTime = LocalDateTimeToGraphIso(appointment.FechaFin), timeZone = "UTC" }
         };
 
         var url = $"{GraphApiBase}/me/calendar/events/{appointment.ExternalEventId}";
@@ -159,8 +204,8 @@ public class MicrosoftGraphCalendarAdapter : ICalendarProvider
                         {
                             ExternalEventId = item.Id,
                             Tipo = "updated",
-                            FechaInicio = item.Start != null ? DateTime.Parse(item.Start.DateTime) : null,
-                            FechaFin = item.End != null ? DateTime.Parse(item.End.DateTime) : null,
+                            FechaInicio = item.Start != null ? FromGraphInstant(item.Start.DateTime, item.Start.Date) : null,
+                            FechaFin = item.End != null ? FromGraphInstant(item.End.DateTime, item.End.Date) : null,
                             Summary = item.Subject
                         });
                     }
@@ -389,7 +434,8 @@ public class MicrosoftGraphCalendarAdapter : ICalendarProvider
 
     private class GraphEventTime
     {
-        [JsonPropertyName("dateTime")] public string DateTime { get; set; } = string.Empty;
+        [JsonPropertyName("dateTime")] public string? DateTime { get; set; }
+        [JsonPropertyName("date")] public string? Date { get; set; }
         [JsonPropertyName("timeZone")] public string TimeZone { get; set; } = string.Empty;
     }
 

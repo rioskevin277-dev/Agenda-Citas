@@ -161,8 +161,12 @@ public class GoogleCalendarAdapter : ICalendarProvider
     {
         var (accessToken, calendarId) = await GetAuthAsync(tenantId, ct);
 
-        var url = $"{CalendarApiBase}/calendars/{Uri.EscapeDataString(calendarId)}/events" +
-                  $"?syncToken={Uri.EscapeDataString(syncToken)}&singleEvents=true";
+        // Sin syncToken (primer delta) omitimos el parámetro para que Google haga un full
+// sync y devuelva el nextSyncToken inicial. Con token vacío explícito Google responde 400.
+var url = $"{CalendarApiBase}/calendars/{Uri.EscapeDataString(calendarId)}/events" +
+          (string.IsNullOrEmpty(syncToken)
+              ? "?singleEvents=true"
+              : $"?syncToken={Uri.EscapeDataString(syncToken)}&singleEvents=true");
 
         var (json, status) = await SendWithRefreshAsync(tenantId, HttpMethod.Get, url, null, ct);
         if (status == 401) (json, status) = await RetryWithRefreshAsync(tenantId, HttpMethod.Get, url, null, ct);

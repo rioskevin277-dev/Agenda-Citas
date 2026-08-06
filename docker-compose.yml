@@ -45,10 +45,12 @@ services:
       - WhatsApp__PhoneNumberId=${WHATSAPP_PHONE_NUMBER_ID}
       - WhatsApp__VerifyToken=${WHATSAPP_VERIFY_TOKEN}
       - Groq__ApiKey=${GROQ_API_KEY}
-      - GoogleOAuth__ClientId=${GOOGLE_OAUTH_CLIENT_ID}
-      - GoogleOAuth__ClientSecret=${GOOGLE_OAUTH_CLIENT_SECRET}
-      - MicrosoftOAuth__ClientId=${MS_OAUTH_CLIENT_ID}
-      - MicrosoftOAuth__ClientSecret=${MS_OAUTH_CLIENT_SECRET}
+      - GoogleOAuth__ClientId=${GoogleOAuth__ClientId}
+      - GoogleOAuth__ClientSecret=${GoogleOAuth__ClientSecret}
+      - MicrosoftOAuth__ClientId=${MicrosoftOAuth__ClientId}
+      - MicrosoftOAuth__ClientSecret=${MicrosoftOAuth__ClientSecret}
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
+      - Calendar__TimeZone=${Calendar__TimeZone}
       - ASPNETCORE_URLS=http://+:8080
       - ASPNETCORE_ENVIRONMENT=Production
     networks:

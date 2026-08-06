@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AgendaApi.Application.UseCases;
 using AgendaApi.Domain.Ports;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -18,6 +19,7 @@ public class GoogleOAuthController : ControllerBase
     private readonly ITenantRepository _tenantRepo;
     private readonly ICalendarConnectionRepository _connectionRepo;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ITokenEncryptionService _tokenEncryption;
     private readonly ILogger<GoogleOAuthController> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -31,6 +33,7 @@ public class GoogleOAuthController : ControllerBase
         ITenantRepository tenantRepo,
         ICalendarConnectionRepository connectionRepo,
         IUnitOfWork unitOfWork,
+        IServiceScopeFactory serviceScopeFactory,
         ITokenEncryptionService tokenEncryption,
         ILogger<GoogleOAuthController> logger,
         IHttpClientFactory httpClientFactory)
@@ -38,6 +41,7 @@ public class GoogleOAuthController : ControllerBase
         _tenantRepo = tenantRepo;
         _connectionRepo = connectionRepo;
         _unitOfWork = unitOfWork;
+        _serviceScopeFactory = serviceScopeFactory;
         _tokenEncryption = tokenEncryption;
         _logger = logger;
         _httpClientFactory = httpClientFactory;
@@ -176,9 +180,21 @@ public class GoogleOAuthController : ControllerBase
                 await _connectionRepo.CreateAsync(connection, ct);
             }
 
+// Marcar el tenant como Google para que la fábrica resuelva el adaptador correcto
+            var tenant = await _tenantRepo.GetByIdAsync(tenantId, ct);
+            if (tenant != null && tenant.CalendarProvider != "google")
+            {
+                tenant.CalendarProvider = "google";
+                tenant.FechaActualizacion = DateTime.UtcNow;
+                await _tenantRepo.UpdateAsync(tenant, ct);
+            }
+
             await _unitOfWork.SaveChangesAsync(ct);
 
             _logger.LogInformation("[GoogleOAuth] Conexión de Google Calendar configurada para tenant {TenantId}", tenantId);
+
+            // Disparar la suscripción webhook (best-effort, sin bloquear la respuesta)
+            TriggerCalendarSubscription(tenantId);
 
             return Ok(new
             {
@@ -192,6 +208,35 @@ public class GoogleOAuthController : ControllerBase
             _logger.LogError(ex, "[GoogleOAuth] Error en callback OAuth");
             return StatusCode(500, new { error = "Error configurando Google Calendar", detail = ex.Message });
         }
+    }
+
+    /// <summary>
+    /// Crea/renueva la suscripción webhook del calendario de forma asíncrona (fire-and-forget)
+    /// para no bloquear el OAuth. Sin PUBLIC_BASE_URL no se puede armar la notificationUrl y se omite.
+    /// </summary>
+    private void TriggerCalendarSubscription(Guid tenantId)
+    {
+        var webhookBaseUrl = Environment.GetEnvironmentVariable("PUBLIC_BASE_URL");
+        if (string.IsNullOrWhiteSpace(webhookBaseUrl))
+        {
+            _logger.LogWarning("[GoogleOAuth] PUBLIC_BASE_URL no configurada, sin suscripción webhook para {TenantId}", tenantId);
+            return;
+        }
+
+        Task.Run(async () =>
+        {
+            try
+            {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var useCase = scope.ServiceProvider.GetRequiredService<RenewCalendarSubscriptionsUseCase>();
+                await useCase.EnsureSubscriptionAsync(tenantId, webhookBaseUrl);
+                _logger.LogInformation("[GoogleOAuth] Suscripción webhook asegurada para {TenantId}", tenantId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[GoogleOAuth] No se pudo crear la suscripción webhook para {TenantId}", tenantId);
+            }
+        });
     }
 
     private class OAuthState

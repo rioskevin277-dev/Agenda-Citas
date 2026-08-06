@@ -21,6 +21,12 @@ public interface ICalendarConnectionRepository
 {
     Task<CalendarConnection?> GetByTenantIdAsync(Guid tenantId, CancellationToken ct = default);
     Task<CalendarConnection?> GetByChannelIdAsync(string channelId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Devuelve todas las conexiones activas. Se usa para renovar suscripciones webhook
+    /// (crear las que no tienen canal, renovar las que están por expirar).
+    /// </summary>
+    Task<List<CalendarConnection>> GetAllActiveAsync(CancellationToken ct = default);
     Task<CalendarConnection> CreateAsync(CalendarConnection connection, CancellationToken ct = default);
     Task UpdateAsync(CalendarConnection connection, CancellationToken ct = default);
     Task DeleteAsync(Guid id, CancellationToken ct = default);

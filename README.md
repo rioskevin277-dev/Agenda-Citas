@@ -1,6 +1,6 @@
 # AgendaApi — Asistente de Citas por WhatsApp (Multi-Tenant)
 
-Agente conversacional con IA que **agenda, consulta, reprograma, confirma y cancela citas** a través de **WhatsApp**, sincronizadas con **Google Calendar** (y preparado para **Microsoft 365**). Multi-tenant: un mismo sistema sirve a varios negocios, cada uno con su propio calendario, servicios y horarios.
+Agente conversacional con IA que **agenda, consulta, reprograma, confirma y cancela citas** a través de **WhatsApp**, sincronizadas con **Google Calendar** o **Microsoft 365 (Outlook)** ([conexión](#-conectar-microsoft-365)). Multi-tenant: un mismo sistema sirve a varios negocios, cada uno con su propio calendario, servicios y horarios.
 
 ---
 
@@ -135,12 +135,53 @@ curl.exe http://localhost:5000/swagger                     # documentación inte
 | `WHATSAPP_ACCESS_TOKEN` | ⚠️ | Token de Meta Cloud API |
 | `WHATSAPP_PHONE_NUMBER_ID` | ⚠️ | ID del número de WhatsApp en Meta |
 | `WHATSAPP_VERIFY_TOKEN` | ⚠️ | Token de verificación del webhook |
-| `GOOGLE_OAUTH_CLIENT_ID` | ⚠️ | Requisito ENABLED **Google Calendar sync** |
-| `GOOGLE_OAUTH_CLIENT_SECRET` | ⚠️ | Requisito ENABLED **Google Calendar sync** |
-| `MS_OAUTH_CLIENT_ID` / `SECRET` | ❌ | Microsoft 365 (no configurado aún) |
+| `GoogleOAuth__ClientId` | ⚠️ | Requisito ENABLED **Google Calendar sync** |
+| `GoogleOAuth__ClientSecret` | ⚠️ | Requisito ENABLED **Google Calendar sync** |
+| `MicrosoftOAuth__ClientId` | ⚠️ | Requisito ENABLED **Microsoft 365 sync** (ver [Conectar Microsoft 365](#-conectar-microsoft-365)) |
+| `MicrosoftOAuth__ClientSecret` | ⚠️ | Requisito ENABLED **Microsoft 365 sync** |
+| `PUBLIC_BASE_URL` | ⚠️ | Dominio/túnel público de la API. Arma la `notificationUrl` de las suscripciones de Google/Microsoft |
 | `Calendar__TimeZone` | ❌ | Zona horaria del negocio. Default `America/Bogota` |
 
-> **Esquema de nombres**: en el código se usan `OpenAI__ApiKey`, `Groq__ApiKey`, `WhatssApp__AccessToken`, `GoogleOAuth__ClientId`, etc. Docker parsea las variables `.env`. mantenlo consistente.
+> **Esquema de nombres**: el código lee las variables con formato `Section__Key` (`Groq__ApiKey`, `OpenAI__ApiKey`, `WhatsApp__AccessToken`, `GoogleOAuth__ClientId`, `MicrosoftOAuth__ClientId`, `ConnectionStrings__AgendaDb`, …). `.env` debe usar **exactamente** esos nombres (`run.ps1` los setea literal como variables de entorno). Las variantes `ALL_CAPS` (`GROQ_API_KEY`, `GOOGLE_OAUTH_CLIENT_ID`, …) son legacy y no se leen.
+
+---
+
+## 🔵 Conectar Microsoft 365
+
+Sincroniza las citas con **Outlook Calendar** vía **Microsoft Graph API** (flujo OAuth delegado). Un tenant usa **un solo** proveedor de calendario (`tenants.calendar_provider = "google"` o `"microsoft"`); el de Google funciona igual salvo la sección de registro.
+
+### 1. Registrar la app en Microsoft Entra
+
+1. Entrar a **[entra.microsoft.com](https://entra.microsoft.com)** → **App registrations** → **New registration**.
+2. Nombre: ej. `AgendaApi`. **Accounts in this organizational directory only** (o *Any directory* si querés cuentas personales Outlook; el `common` dels authorize usa multi-tenant).
+3. **Redirect URI**: plataforma **Web** → `https://<tu-dominio>/api/v1/oauth/microsoft/callback` (en local, el dominio del túnel; ej. `https://api.adamcoia.com/...`).
+4. **Certificates & secrets** → **New client secret** → guardar el valor (solo se muestra una vez) en `MicrosoftOAuth__ClientSecret`.
+5. **API permissions** → **Add a permission** → **Microsoft Graph** → **Delegated permissions** → marcar:
+   - `Calendars.ReadWrite`
+   - `offline_access` (para obtener refresh token)
+   - Aceptar **Grant admin consent** (solo una vez).
+6. El `Client ID` (Application ID) de la página de **Overview** va en `MicrosoftOAuth__ClientId`.
+
+> Token/refresh en caliente: la app guarda los tokens de fecha cifrados (AES-256) en `calendar_connections`, y el access token se renueva automáticamente con el refresh token cuando expira.
+
+### 2. Configuración `.env`
+
+```env
+MicrosoftOAuth__ClientId=<Application (client) ID>
+MicrosoftOAuth__ClientSecret=<valor del client secret>
+PUBLIC_BASE_URL=https://api.adamcoia.com   # dominio/túnel público (webhooks)
+Calendar__TimeZone=America/Bogota          # zona horaria del negocio
+```
+
+### 3. Conectar un tenant
+
+Con la API arriba (`dotnet run` o `scripts/start-production.ps1`):
+
+1. **Crear el tenant** (si no existe): `POST /api/v1/tenants` (o reusar uno existente) → anotar el `idTenant`.
+2. **Iniciar el OAuth** en el navegador:
+   `GET https://<dominio>/api/v1/oauth/microsoft/authorize?tenantId=<idTenant>`
+3. Iniciar sesión con la cuenta de Outlook, aceptar los permisos y el callback guarda la conexión. En la respuesta sale `{ "message": "Microsoft 365 Calendar conectado exitosamente", "accountEmail": "…" }`.
+4. A partir de ahí el tenant agenda/consulta/cancela en Outlook. El webhook (`POST /api/v1/webhook/calendar`) queda **suscrito y auto-renovado** cada hora, y sincroniza los cambios hechos a mano en el calendario.
 
 ---
 

@@ -22,6 +22,12 @@ public class CalendarConnectionRepository : ICalendarConnectionRepository
         => await _context.CalendarConnections
             .FirstOrDefaultAsync(c => c.SyncChannelId == channelId && c.Activo, ct);
 
+    public async Task<List<CalendarConnection>> GetAllActiveAsync(CancellationToken ct = default)
+        => await _context.CalendarConnections
+            .Where(c => c.Activo)
+            .AsNoTracking()
+            .ToListAsync(ct);
+
     public async Task<CalendarConnection> CreateAsync(CalendarConnection connection, CancellationToken ct = default)
     {
         await _context.CalendarConnections.AddAsync(connection, ct);
