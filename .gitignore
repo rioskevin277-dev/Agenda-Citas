@@ -50,3 +50,10 @@ Thumbs.db
 # Local publish (Docker build)
 publish_local/
 *.output
+
+# Capturas sueltas en la raiz (referencia, fuera del repo)
+/1.png
+/2.png
+/3.png
+/4.png
+/5.png
