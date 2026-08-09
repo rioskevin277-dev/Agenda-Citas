@@ -37,6 +37,12 @@ public class ServiceType
     public int BufferMinutos { get; set; } = 0;
 
     /// <summary>
+    /// Número máximo de citas simultáneas permitidas en el mismo horario (1 = una a la vez).
+    /// </summary>
+    [Column("capacidad_maxima")]
+    public int CapacidadMaxima { get; set; } = 1;
+
+    /// <summary>
     /// Precio del servicio (opcional, para referencia).
     /// </summary>
     [Column("precio")]

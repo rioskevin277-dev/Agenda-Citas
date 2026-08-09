@@ -180,4 +180,125 @@ public class CheckAvailabilityUseCaseTests
         // Assert
         result.Should().BeEmpty();
     }
+
+    [Fact]
+    public async Task ExecuteAsync_WithCapacityTwoAndOneBooking_ReturnsWholeDay()
+    {
+        // Arrange
+        var tenantId = Guid.NewGuid();
+        var fecha = new DateOnly(2026, 8, 3); // Monday
+        var serviceType = new ServiceType
+        {
+            IdServiceType = Guid.NewGuid(),
+            IdTenant = tenantId,
+            Nombre = "Corte",
+            DuracionMinutos = 30,
+            CapacidadMaxima = 2
+        };
+
+        _serviceTypeRepo.Setup(r => r.GetByTenantIdAsync(tenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ServiceType> { serviceType });
+        _availabilityRepo.Setup(r => r.GetByTenantIdAsync(tenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<AvailabilityRule>
+            {
+                new() { DiaSemana = 1, HoraInicio = new TimeSpan(9, 0, 0), HoraFin = new TimeSpan(17, 0, 0), Activo = true }
+            });
+        _availabilityRepo.Setup(r => r.GetExceptionsByDateRangeAsync(tenantId, It.IsAny<DateTime>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<AvailabilityException>());
+
+        // Una sola cita no llena un servicio con capacidad 2
+        _appointmentRepo.Setup(r => r.GetByDateRangeAsync(tenantId, It.IsAny<DateTime>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Appointment>
+            {
+                new()
+                {
+                    IdAppointment = Guid.NewGuid(),
+                    IdTenant = tenantId,
+                    FechaInicio = new DateTime(2026, 8, 3, 10, 0, 0, DateTimeKind.Utc),
+                    FechaFin = new DateTime(2026, 8, 3, 11, 0, 0, DateTimeKind.Utc),
+                    Estado = "confirmed"
+                }
+            });
+
+        var query = new AvailabilityQueryDto
+        {
+            TenantId = tenantId,
+            FechaInicio = fecha,
+            FechaFin = fecha,
+            ServiceTypeName = "Corte"
+        };
+
+        // Act
+        var result = await _useCase.ExecuteAsync(query);
+
+        // Assert
+        result.Any(s => s.Start.Hour == 9 && s.End.Hour == 17).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithCapacityTwoFull_ExcludesOccupiedSegment()
+    {
+        // Arrange
+        var tenantId = Guid.NewGuid();
+        var fecha = new DateOnly(2026, 8, 3); // Monday
+        var serviceType = new ServiceType
+        {
+            IdServiceType = Guid.NewGuid(),
+            IdTenant = tenantId,
+            Nombre = "Clase",
+            DuracionMinutos = 60,
+            CapacidadMaxima = 2
+        };
+
+        _serviceTypeRepo.Setup(r => r.GetByTenantIdAsync(tenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ServiceType> { serviceType });
+        _availabilityRepo.Setup(r => r.GetByTenantIdAsync(tenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<AvailabilityRule>
+            {
+                new() { DiaSemana = 1, HoraInicio = new TimeSpan(9, 0, 0), HoraFin = new TimeSpan(17, 0, 0), Activo = true }
+            });
+        _availabilityRepo.Setup(r => r.GetExceptionsByDateRangeAsync(tenantId, It.IsAny<DateTime>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<AvailabilityException>());
+
+        // Dos citas que se pisan de 10:30 a 11:30 llenan la capacidad 2 en ese tramo
+        _appointmentRepo.Setup(r => r.GetByDateRangeAsync(tenantId, It.IsAny<DateTime>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Appointment>
+            {
+                new()
+                {
+                    IdAppointment = Guid.NewGuid(),
+                    IdTenant = tenantId,
+                    FechaInicio = new DateTime(2026, 8, 3, 10, 0, 0, DateTimeKind.Utc),
+                    FechaFin = new DateTime(2026, 8, 3, 12, 0, 0, DateTimeKind.Utc),
+                    Estado = "confirmed"
+                },
+                new()
+                {
+                    IdAppointment = Guid.NewGuid(),
+                    IdTenant = tenantId,
+                    FechaInicio = new DateTime(2026, 8, 3, 10, 30, 0, DateTimeKind.Utc),
+                    FechaFin = new DateTime(2026, 8, 3, 11, 30, 0, DateTimeKind.Utc),
+                    Estado = "confirmed"
+                }
+            });
+
+        var query = new AvailabilityQueryDto
+        {
+            TenantId = tenantId,
+            FechaInicio = fecha,
+            FechaFin = fecha,
+            ServiceTypeName = "Clase"
+        };
+
+        // Act
+        var result = await _useCase.ExecuteAsync(query);
+
+        // Assert
+        // El tramo donde se juntan 2 citas (10:30-11:30) ya no debe aparecer como libre
+        var blockedMid = new DateTime(2026, 8, 3, 11, 0, 0, DateTimeKind.Utc);
+        result.Any(s => s.Start < blockedMid && s.End > blockedMid).Should().BeFalse();
+        // Los tramos con un solo asiento ocupado siguen libres: 9-10:30 y 11:30-17
+        result.Any(s => s.Start.Hour == 9 && s.End.Hour == 10 && s.End.Minute == 30).Should().BeTrue();
+        result.Any(s => s.Start.Hour == 11 && s.Start.Minute == 30).Should().BeTrue();
+    }
 }

@@ -65,9 +65,9 @@ public class CheckAvailabilityUseCase
         if (availableSlots.Count == 0)
             return new List<TimeSlotDto>();
 
-        // 4. Get existing appointments in the range (blocked times)
+        // 4. Citas locales existentes en el rango: consumen la capacidad del servicio
         var existingAppointments = await _appointmentRepo.GetByDateRangeAsync(query.TenantId, from, to, ct);
-        var existingEvents = existingAppointments
+        var localAppointments = existingAppointments
             .Where(a => a.Estado != "cancelled")
             .Select(a => new TimeSlot
             {
@@ -78,10 +78,8 @@ public class CheckAvailabilityUseCase
             })
             .ToList();
 
-        // 5. Merge: remove slots that overlap with existing appointments
-        var mergedSlots = MergeSlots(availableSlots, existingEvents);
-
-        // 6. Also check external calendar (if connected)
+        // 5. Calendario externo: bloqueo duro, independiente de la capacidad (mismo criterio que BookingPolicy)
+        var externalBusy = new List<TimeSlot>();
         var connection = await _connectionRepo.GetByTenantIdAsync(query.TenantId, ct);
         if (connection?.Activo == true)
         {
@@ -92,13 +90,13 @@ public class CheckAvailabilityUseCase
                 {
                     var externalSlots = await provider.GetAvailabilityAsync(
                         query.TenantId, query.FechaInicio, query.FechaFin, ct);
-                    mergedSlots = MergeSlots(mergedSlots, externalSlots.Select(s => new TimeSlot
+                    externalBusy = externalSlots.Select(s => new TimeSlot
                     {
                         FechaInicio = s.FechaInicio,
                         FechaFin = s.FechaFin,
                         Disponible = s.Disponible,
                         ExternalEventId = s.ExternalEventId
-                    }).ToList());
+                    }).ToList();
                 }
             }
             catch (Exception ex)
@@ -106,6 +104,11 @@ public class CheckAvailabilityUseCase
                 _logger.LogWarning(ex, "[CheckAvailability] Calendario externo no disponible para tenant {TenantId}, usando datos locales", query.TenantId);
             }
         }
+
+        // 6. Fusionar: recortar intervalos donde la ocupación alcanza la capacidad.
+        //    Sin filtro de servicio la capacidad es 1 (cualquier cita bloquea = comportamiento actual).
+        var capacidad = filterServiceType?.CapacidadMaxima ?? 1;
+        var mergedSlots = MergeSlotsWithCapacity(availableSlots, localAppointments, externalBusy, capacidad);
 
         var result = mergedSlots
             .Where(s => s.Disponible)
@@ -169,51 +172,81 @@ public class CheckAvailabilityUseCase
         return slots;
     }
 
-    private static List<TimeSlot> MergeSlots(List<TimeSlot> available, List<TimeSlot> busy)
+    /// <summary>
+    /// Recorta los intervalos disponibles donde la ocupación alcanza la capacidad del servicio.
+    /// Las citas locales cuentan hacia la capacidad; el calendario externo es bloqueo duro.
+    /// Con capacidad = 1 el resultado es idéntico al recorte binario anterior (cualquier cita bloquea).
+    /// </summary>
+    private static List<TimeSlot> MergeSlotsWithCapacity(
+        List<TimeSlot> available,
+        List<TimeSlot> localAppointments,
+        List<TimeSlot> externalBusy,
+        int capacidad)
     {
-        if (busy.Count == 0) return available;
-
         var result = new List<TimeSlot>();
         foreach (var slot in available)
         {
-            var overlapping = busy
-                .Where(b => b.FechaInicio < slot.FechaFin && b.FechaFin > slot.FechaInicio)
-                .OrderBy(b => b.FechaInicio)
-                .ToList();
+            var local = localAppointments.Where(b => Overlaps(b, slot)).ToList();
+            var external = externalBusy.Where(b => Overlaps(b, slot)).ToList();
 
-            if (overlapping.Count == 0)
+            if (local.Count == 0 && external.Count == 0)
             {
                 result.Add(slot);
                 continue;
             }
 
-            var currentStart = slot.FechaInicio;
-            foreach (var busySlot in overlapping)
-            {
-                if (busySlot.FechaInicio > currentStart)
-                {
-                    result.Add(new TimeSlot
-                    {
-                        FechaInicio = currentStart,
-                        FechaFin = busySlot.FechaInicio,
-                        Disponible = true
-                    });
-                }
-                currentStart = busySlot.FechaFin > currentStart ? busySlot.FechaFin : currentStart;
-            }
+            // Puntos donde cambia la ocupación: inicios y fines de citas dentro del slot
+            var boundaries = new SortedSet<DateTime> { slot.FechaInicio, slot.FechaFin };
+            foreach (var a in local) AddBoundary(boundaries, a, slot);
+            foreach (var e in external) AddBoundary(boundaries, e, slot);
 
-            if (currentStart < slot.FechaFin)
+            var points = boundaries.ToList();
+            TimeSlot? previous = null; // para fusionar segmentos libres adyacentes (capacidad > 1)
+            for (var i = 0; i < points.Count - 1; i++)
             {
-                result.Add(new TimeSlot
+                var segmentStart = points[i];
+                var segmentEnd = points[i + 1];
+
+                var localCount = local.Count(x => x.FechaInicio < segmentEnd && x.FechaFin > segmentStart);
+                var blocked = external.Any(x => x.FechaInicio < segmentEnd && x.FechaFin > segmentStart);
+
+                if (!blocked && localCount < capacidad)
                 {
-                    FechaInicio = currentStart,
-                    FechaFin = slot.FechaFin,
-                    Disponible = true
-                });
+                    if (previous != null && previous.FechaFin == segmentStart)
+                    {
+                        previous.FechaFin = segmentEnd;
+                    }
+                    else
+                    {
+                        previous = new TimeSlot
+                        {
+                            FechaInicio = segmentStart,
+                            FechaFin = segmentEnd,
+                            Disponible = true
+                        };
+                        result.Add(previous);
+                    }
+                }
+                else
+                {
+                    // Un segmento lleno (o bloqueado por el calendario externo) corta la fusión
+                    previous = null;
+                }
             }
         }
 
         return result;
+    }
+
+    private static bool Overlaps(TimeSlot a, TimeSlot b)
+        => a.FechaInicio < b.FechaFin && a.FechaFin > b.FechaInicio;
+
+    private static void AddBoundary(SortedSet<DateTime> boundaries, TimeSlot item, TimeSlot slot)
+    {
+        if (item.FechaInicio > slot.FechaInicio && item.FechaInicio < slot.FechaFin)
+            boundaries.Add(item.FechaInicio);
+        if (item.FechaFin > slot.FechaInicio && item.FechaFin < slot.FechaFin)
+            boundaries.Add(item.FechaFin);
     }
 
     // Internal class for merging logic

@@ -17,11 +17,17 @@ public class CreateAppointmentUseCaseTests
     private readonly Mock<IMessagingProvider> _messagingProvider = new();
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
     private readonly Mock<ICalendarProvider> _calendarProvider = new();
+    private readonly Mock<IBookingPolicy> _bookingPolicy = new();
 
     private readonly CreateAppointmentUseCase _useCase;
 
     public CreateAppointmentUseCaseTests()
     {
+        _bookingPolicy.Setup(p => p.ValidateAsync(
+                It.IsAny<Guid>(), It.IsAny<DateTime>(), It.IsAny<DateTime>(),
+                It.IsAny<Guid?>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BookingValidationResult.Ok());
+
         _useCase = new CreateAppointmentUseCase(
             _appointmentRepo.Object,
             _clientRepo.Object,
@@ -29,7 +35,8 @@ public class CreateAppointmentUseCaseTests
             _connectionRepo.Object,
             _providerFactory.Object,
             _messagingProvider.Object,
-            _unitOfWork.Object);
+            _unitOfWork.Object,
+            _bookingPolicy.Object);
     }
 
     [Fact]

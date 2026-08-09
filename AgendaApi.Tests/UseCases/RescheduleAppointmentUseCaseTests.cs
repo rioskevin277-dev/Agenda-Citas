@@ -19,11 +19,17 @@ public class RescheduleAppointmentUseCaseTests
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
     private readonly Mock<ICalendarProvider> _calendarProvider = new();
     private readonly Mock<ILogger<RescheduleAppointmentUseCase>> _logger = new();
+    private readonly Mock<IBookingPolicy> _bookingPolicy = new();
 
     private readonly RescheduleAppointmentUseCase _useCase;
 
     public RescheduleAppointmentUseCaseTests()
     {
+        _bookingPolicy.Setup(p => p.ValidateAsync(
+                It.IsAny<Guid>(), It.IsAny<DateTime>(), It.IsAny<DateTime>(),
+                It.IsAny<Guid?>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BookingValidationResult.Ok());
+
         _useCase = new RescheduleAppointmentUseCase(
             _appointmentRepo.Object,
             _serviceTypeRepo.Object,
@@ -32,7 +38,8 @@ public class RescheduleAppointmentUseCaseTests
             _clientRepo.Object,
             _messagingProvider.Object,
             _unitOfWork.Object,
-            _logger.Object);
+            _logger.Object,
+            _bookingPolicy.Object);
     }
 
     [Fact]

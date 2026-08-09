@@ -42,6 +42,20 @@ public class Tenant
     public string? Direccion { get; set; }
 
     /// <summary>
+    /// Antelación mínima en horas para agendar (0 = sin restricción).
+    /// Ej: 4 = no se pueden agendar citas a menos de 4 horas de anticipación.
+    /// </summary>
+    [Column("antelacion_minima_horas")]
+    public int AntelacionMinimaHoras { get; set; }
+
+    /// <summary>
+    /// Antelación máxima en días para agendar (0 = sin límite).
+    /// Ej: 14 = no se agendan citas más allá de 14 días.
+    /// </summary>
+    [Column("antelacion_maxima_dias")]
+    public int AntelacionMaximaDias { get; set; }
+
+    /// <summary>
     /// Proveedor de calendario que este tenant usa: "google" o "microsoft".
     /// Se define en onboarding y no cambia frecuentemente.
     /// </summary>

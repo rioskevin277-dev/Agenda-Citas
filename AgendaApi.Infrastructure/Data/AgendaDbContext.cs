@@ -29,6 +29,8 @@ public class AgendaDbContext : DbContext
             entity.Property(e => e.Correo).HasMaxLength(150);
             entity.Property(e => e.Telefono).HasMaxLength(30);
             entity.Property(e => e.Direccion).HasMaxLength(250);
+            entity.Property(e => e.AntelacionMinimaHoras).HasDefaultValue(0);
+            entity.Property(e => e.AntelacionMaximaDias).HasDefaultValue(0);
             entity.Property(e => e.CalendarProvider).IsRequired().HasMaxLength(20).HasDefaultValue("google");
             entity.Property(e => e.Activo).HasDefaultValue(true);
             entity.Property(e => e.FechaCreacion).HasDefaultValueSql("GETUTCDATE()");
@@ -84,6 +86,7 @@ public class AgendaDbContext : DbContext
             entity.Property(e => e.Descripcion).HasMaxLength(500);
             entity.Property(e => e.DuracionMinutos).IsRequired();
             entity.Property(e => e.BufferMinutos).HasDefaultValue(0);
+            entity.Property(e => e.CapacidadMaxima).HasDefaultValue(1);
             entity.Property(e => e.Precio).HasColumnType("decimal(10,2)");
             entity.Property(e => e.Activo).HasDefaultValue(true);
             entity.Property(e => e.FechaCreacion).HasDefaultValueSql("GETUTCDATE()");

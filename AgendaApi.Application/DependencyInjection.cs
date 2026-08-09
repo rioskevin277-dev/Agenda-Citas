@@ -1,5 +1,7 @@
+using AgendaApi.Application.Rules;
 using AgendaApi.Application.Services;
 using AgendaApi.Application.UseCases;
+using AgendaApi.Domain.Ports;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace AgendaApi.Application;
@@ -8,6 +10,9 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddApplicationLayer(this IServiceCollection services)
     {
+        // Motor de reglas de agenda
+        services.AddScoped<IBookingPolicy, BookingPolicy>();
+
         // Use cases
         services.AddScoped<CheckAvailabilityUseCase>();
         services.AddScoped<CreateAppointmentUseCase>();

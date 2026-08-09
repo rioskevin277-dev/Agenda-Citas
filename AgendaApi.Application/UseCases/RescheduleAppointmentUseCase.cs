@@ -18,6 +18,7 @@ public class RescheduleAppointmentUseCase
     private readonly IMessagingProvider _messagingProvider;
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<RescheduleAppointmentUseCase> _logger;
+    private readonly IBookingPolicy _bookingPolicy;
 
     public RescheduleAppointmentUseCase(
         IAppointmentRepository appointmentRepo,
@@ -27,7 +28,8 @@ public class RescheduleAppointmentUseCase
         IClientRepository clientRepo,
         IMessagingProvider messagingProvider,
         IUnitOfWork unitOfWork,
-        ILogger<RescheduleAppointmentUseCase> logger)
+        ILogger<RescheduleAppointmentUseCase> logger,
+        IBookingPolicy bookingPolicy)
     {
         _appointmentRepo = appointmentRepo;
         _serviceTypeRepo = serviceTypeRepo;
@@ -37,6 +39,7 @@ public class RescheduleAppointmentUseCase
         _messagingProvider = messagingProvider;
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _bookingPolicy = bookingPolicy;
     }
 
     public async Task<AppointmentResponseDto?> ExecuteAsync(AppointmentRescheduleDto dto, CancellationToken ct = default)
@@ -72,16 +75,23 @@ public class RescheduleAppointmentUseCase
         if (appointment.Estado == "cancelled")
             throw new InvalidOperationException("No se puede reprogramar una cita cancelada");
 
+        // Resolver el tipo de servicio para restricciones (capacidad) y el fin de la cita
+        var serviceType = await _serviceTypeRepo.GetByIdAsync(appointment.IdServiceType, ct);
+
         // Calcular NuevaFechaFin si no se especificó
         var nuevaFechaFin = dto.NuevaFechaFin != default
             ? dto.NuevaFechaFin
-            : await CalculateEndTimeAsync(appointment.IdServiceType, dto.NuevaFechaInicio, ct);
+            : serviceType != null
+                ? dto.NuevaFechaInicio.AddMinutes(serviceType.DuracionMinutos + serviceType.BufferMinutos)
+                : dto.NuevaFechaInicio.AddHours(1); // fallback: 1 hora
 
-        // Check no overlap for new time
-        var existingInRange = await _appointmentRepo.GetByDateRangeAsync(
-            appointment.IdTenant, dto.NuevaFechaInicio, nuevaFechaFin, ct);
-        if (existingInRange.Any(a => a.IdAppointment != dto.AppointmentId && a.Estado != "cancelled"))
-            throw new InvalidOperationException("El nuevo horario solicitado ya esta ocupado");
+        // Validar el nuevo horario contra las reglas del negocio, excluyendo la cita que se reprograma
+        var validation = await _bookingPolicy.ValidateAsync(
+            appointment.IdTenant, dto.NuevaFechaInicio, nuevaFechaFin,
+            excludeAppointmentId: appointment.IdAppointment,
+            capacidad: serviceType?.CapacidadMaxima ?? 1, ct: ct);
+        if (!validation.IsValid)
+            throw new InvalidOperationException(validation.Reason);
 
         // Update in external calendar
         if (!string.IsNullOrEmpty(appointment.ExternalEventId))
@@ -136,14 +146,5 @@ public class RescheduleAppointmentUseCase
             FechaFin = appointment.FechaFin,
             Status = appointment.Estado
         };
-    }
-
-    private async Task<DateTime> CalculateEndTimeAsync(Guid serviceTypeId, DateTime startTime, CancellationToken ct)
-    {
-        var serviceType = await _serviceTypeRepo.GetByIdAsync(serviceTypeId, ct);
-        if (serviceType == null)
-            return startTime.AddHours(1); // fallback: 1 hora
-
-        return startTime.AddMinutes(serviceType.DuracionMinutos + serviceType.BufferMinutos);
     }
 }

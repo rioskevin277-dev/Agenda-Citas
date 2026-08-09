@@ -17,6 +17,7 @@ public class CreateAppointmentUseCase
     private readonly ICalendarProviderFactory _providerFactory;
     private readonly IMessagingProvider _messagingProvider;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly IBookingPolicy _bookingPolicy;
 
     public CreateAppointmentUseCase(
         IAppointmentRepository appointmentRepo,
@@ -25,7 +26,8 @@ public class CreateAppointmentUseCase
         ICalendarConnectionRepository connectionRepo,
         ICalendarProviderFactory providerFactory,
         IMessagingProvider messagingProvider,
-        IUnitOfWork unitOfWork)
+        IUnitOfWork unitOfWork,
+        IBookingPolicy bookingPolicy)
     {
         _appointmentRepo = appointmentRepo;
         _clientRepo = clientRepo;
@@ -34,6 +36,7 @@ public class CreateAppointmentUseCase
         _providerFactory = providerFactory;
         _messagingProvider = messagingProvider;
         _unitOfWork = unitOfWork;
+        _bookingPolicy = bookingPolicy;
     }
 
     public async Task<AppointmentResponseDto?> ExecuteAsync(AppointmentCreateDto dto, CancellationToken ct = default)
@@ -97,11 +100,13 @@ public class CreateAppointmentUseCase
             ? dto.FechaFin
             : dto.FechaInicio.AddMinutes(serviceType.DuracionMinutos + serviceType.BufferMinutos);
 
-        // Validate no overlap
-        var existingInRange = await _appointmentRepo.GetByDateRangeAsync(
-            dto.TenantId, dto.FechaInicio, fechaFin, ct);
-        if (existingInRange.Any(a => a.Estado != "cancelled"))
-            throw new InvalidOperationException("El horario solicitado ya está ocupado");
+        // Validar la reserva contra las reglas del negocio
+        // (antelación, horario laboral, feriados/excepciones, capacidad, calendario externo)
+        var validation = await _bookingPolicy.ValidateAsync(
+            dto.TenantId, dto.FechaInicio, fechaFin,
+            capacidad: serviceType.CapacidadMaxima, ct: ct);
+        if (!validation.IsValid)
+            throw new InvalidOperationException(validation.Reason);
 
         // Create appointment locally
         var appointment = new Appointment
