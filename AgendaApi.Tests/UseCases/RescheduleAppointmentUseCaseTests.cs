@@ -27,7 +27,7 @@ public class RescheduleAppointmentUseCaseTests
     {
         _bookingPolicy.Setup(p => p.ValidateAsync(
                 It.IsAny<Guid>(), It.IsAny<DateTime>(), It.IsAny<DateTime>(),
-                It.IsAny<Guid?>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Guid?>(), It.IsAny<int>(), It.IsAny<Guid?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(BookingValidationResult.Ok());
 
         _useCase = new RescheduleAppointmentUseCase(

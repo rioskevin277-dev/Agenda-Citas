@@ -28,11 +28,14 @@ public interface IBookingPolicy
     /// <param name="fechaFin">Fin de la reserva.</param>
     /// <param name="excludeAppointmentId">Cita a ignorar en el chequeo de conflicto (para reprogramación).</param>
     /// <param name="capacidad">Citas simultáneas permitidas en el mismo horario (1 = una a la vez).</param>
+    /// <param name="professionalId">Si se asigna un profesional, valida el canal de ESE profesional
+    /// (sus citas + las legadas sin profesional, capacidad 1) y su horario personal si lo tiene.</param>
     Task<BookingValidationResult> ValidateAsync(
         Guid tenantId,
         DateTime fechaInicio,
         DateTime fechaFin,
         Guid? excludeAppointmentId = null,
         int capacidad = 1,
+        Guid? professionalId = null,
         CancellationToken ct = default);
 }

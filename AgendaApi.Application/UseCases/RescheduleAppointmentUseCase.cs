@@ -85,11 +85,13 @@ public class RescheduleAppointmentUseCase
                 ? dto.NuevaFechaInicio.AddMinutes(serviceType.DuracionMinutos + serviceType.BufferMinutos)
                 : dto.NuevaFechaInicio.AddHours(1); // fallback: 1 hora
 
-        // Validar el nuevo horario contra las reglas del negocio, excluyendo la cita que se reprograma
+        // Validar el nuevo horario contra las reglas del negocio, excluyendo la cita que se reprograma.
+        // Si la cita tenía profesional, se respeta su canal en el nuevo horario.
         var validation = await _bookingPolicy.ValidateAsync(
             appointment.IdTenant, dto.NuevaFechaInicio, nuevaFechaFin,
             excludeAppointmentId: appointment.IdAppointment,
-            capacidad: serviceType?.CapacidadMaxima ?? 1, ct: ct);
+            capacidad: serviceType?.CapacidadMaxima ?? 1,
+            professionalId: appointment.IdProfessional, ct: ct);
         if (!validation.IsValid)
             throw new InvalidOperationException(validation.Reason);
 

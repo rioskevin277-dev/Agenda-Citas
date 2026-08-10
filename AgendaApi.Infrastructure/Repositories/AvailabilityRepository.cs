@@ -14,16 +14,32 @@ public class AvailabilityRepository : IAvailabilityRepository
         _context = context;
     }
 
+    /// <summary>Reglas del negocio: solo las que aplican a todo el mundo (IdProfessional == null).</summary>
     public async Task<List<AvailabilityRule>> GetByTenantIdAsync(Guid tenantId, CancellationToken ct = default)
         => await _context.AvailabilityRules
-            .Where(r => r.IdTenant == tenantId && r.Activo)
+            .Where(r => r.IdTenant == tenantId && r.IdProfessional == null && r.Activo)
             .OrderBy(r => r.DiaSemana)
             .ThenBy(r => r.HoraInicio)
             .ToListAsync(ct);
 
+    /// <summary>Reglas personales de un profesional (IdProfessional == professionalId).</summary>
+    public async Task<List<AvailabilityRule>> GetByTenantAndProfessionalAsync(Guid tenantId, Guid professionalId, CancellationToken ct = default)
+        => await _context.AvailabilityRules
+            .Where(r => r.IdTenant == tenantId && r.IdProfessional == professionalId && r.Activo)
+            .OrderBy(r => r.DiaSemana)
+            .ThenBy(r => r.HoraInicio)
+            .ToListAsync(ct);
+
+    /// <summary>Excepciones del negocio: solo las que afectan a todo el mundo (IdProfessional == null).</summary>
     public async Task<List<AvailabilityException>> GetExceptionsByDateRangeAsync(Guid tenantId, DateTime from, DateTime to, CancellationToken ct = default)
         => await _context.AvailabilityExceptions
-            .Where(e => e.IdTenant == tenantId && e.Fecha >= from && e.Fecha <= to)
+            .Where(e => e.IdTenant == tenantId && e.IdProfessional == null && e.Fecha >= from && e.Fecha <= to)
+            .ToListAsync(ct);
+
+    /// <summary>Excepciones personales de un profesional (IdProfessional == professionalId).</summary>
+    public async Task<List<AvailabilityException>> GetExceptionsByDateRangeForProfessionalAsync(Guid tenantId, DateTime from, DateTime to, Guid professionalId, CancellationToken ct = default)
+        => await _context.AvailabilityExceptions
+            .Where(e => e.IdTenant == tenantId && e.IdProfessional == professionalId && e.Fecha >= from && e.Fecha <= to)
             .ToListAsync(ct);
 
     public async Task<AvailabilityRule> CreateRuleAsync(AvailabilityRule rule, CancellationToken ct = default)

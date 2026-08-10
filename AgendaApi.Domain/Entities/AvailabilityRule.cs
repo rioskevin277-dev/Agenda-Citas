@@ -18,6 +18,13 @@ public class AvailabilityRule
     public Guid IdTenant { get; set; }
 
     /// <summary>
+    /// Profesional al que aplica esta regla. NULL = regla del negocio
+    /// (aplica a todo el que no tenga regla propia ese día).
+    /// </summary>
+    [Column("id_professional")]
+    public Guid? IdProfessional { get; set; }
+
+    /// <summary>
     /// Día de la semana (1=Lunes ... 7=Domingo).
     /// </summary>
     [Column("dia_semana")]

@@ -15,6 +15,12 @@ public record AppointmentCreateDto
     /// <summary>Lookup alternativo por nombre de servicio</summary>
     public string? ServiceTypeName { get; init; }
 
+    /// <summary>Profesional asignado (nullable = cita "del negocio").</summary>
+    public Guid? ProfessionalId { get; init; }
+
+    /// <summary>Lookup alternativo por nombre de profesional (ej: "Dra. María").</summary>
+    public string? ProfessionalName { get; init; }
+
     public DateTime FechaInicio { get; init; }
     public DateTime FechaFin { get; init; }
     public string? Notas { get; init; }
@@ -50,6 +56,8 @@ public record AppointmentResponseDto
     public string? ClientName { get; init; }
     public Guid ServiceTypeId { get; init; }
     public string? ServiceTypeName { get; init; }
+    public Guid? ProfessionalId { get; init; }
+    public string? ProfessionalName { get; init; }
     public DateTime FechaInicio { get; init; }
     public DateTime FechaFin { get; init; }
     public string Status { get; init; } = string.Empty;
@@ -66,6 +74,12 @@ public record AvailabilityQueryDto
 
     /// <summary>Lookup alternativo por nombre</summary>
     public string? ServiceTypeName { get; init; }
+
+    /// <summary>Filtrar disponibilidad por profesional (sus reglas + su canal de ocupación).</summary>
+    public Guid? ProfessionalId { get; init; }
+
+    /// <summary>Lookup alternativo por nombre de profesional (ej: "Dra. María").</summary>
+    public string? ProfessionalName { get; init; }
 }
 
 public record TimeSlotDto
@@ -74,6 +88,7 @@ public record TimeSlotDto
     public DateTime End { get; init; }
     public bool Disponible { get; init; }
     public string? ServiceTypeName { get; init; }
+    public string? ProfessionalName { get; init; }
 }
 
 public record ClientDto

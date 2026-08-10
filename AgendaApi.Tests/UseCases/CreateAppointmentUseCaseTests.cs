@@ -17,6 +17,7 @@ public class CreateAppointmentUseCaseTests
     private readonly Mock<IMessagingProvider> _messagingProvider = new();
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
     private readonly Mock<ICalendarProvider> _calendarProvider = new();
+    private readonly Mock<IProfessionalRepository> _professionalRepo = new();
     private readonly Mock<IBookingPolicy> _bookingPolicy = new();
 
     private readonly CreateAppointmentUseCase _useCase;
@@ -25,13 +26,14 @@ public class CreateAppointmentUseCaseTests
     {
         _bookingPolicy.Setup(p => p.ValidateAsync(
                 It.IsAny<Guid>(), It.IsAny<DateTime>(), It.IsAny<DateTime>(),
-                It.IsAny<Guid?>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Guid?>(), It.IsAny<int>(), It.IsAny<Guid?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(BookingValidationResult.Ok());
 
         _useCase = new CreateAppointmentUseCase(
             _appointmentRepo.Object,
             _clientRepo.Object,
             _serviceTypeRepo.Object,
+            _professionalRepo.Object,
             _connectionRepo.Object,
             _providerFactory.Object,
             _messagingProvider.Object,
@@ -162,5 +164,97 @@ public class CreateAppointmentUseCaseTests
         _appointmentRepo.Verify(r => r.CreateAsync(
             It.Is<Appointment>(a => a.FechaFin == expectedEnd),
             It.IsAny<CancellationToken>()));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithProfessionalName_AssignsProfessionalAndValidatesItsChannel()
+    {
+        // Arrange
+        var tenantId = Guid.NewGuid();
+        var professionalId = Guid.NewGuid();
+        var serviceTypeId = Guid.NewGuid();
+
+        _clientRepo.Setup(r => r.GetByWhatsAppAsync("521234567890", tenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Client?)null);
+        _clientRepo.Setup(r => r.CreateAsync(It.IsAny<Client>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Client c, CancellationToken _) => c);
+        _serviceTypeRepo.Setup(r => r.GetByTenantIdAsync(tenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ServiceType>
+            {
+                new() { IdServiceType = serviceTypeId, IdTenant = tenantId, Nombre = "Consulta", DuracionMinutos = 45, Activo = true }
+            });
+        _professionalRepo.Setup(r => r.GetActiveByTenantAndNameAsync(tenantId, "Dra. María", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Professional { IdProfessional = professionalId, IdTenant = tenantId, Nombre = "Dra. María", Activo = true });
+        _professionalRepo.Setup(r => r.ProvidesServiceAsync(professionalId, serviceTypeId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        _appointmentRepo.Setup(r => r.CreateAsync(It.IsAny<Appointment>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Appointment a, CancellationToken _) => a);
+        _connectionRepo.Setup(r => r.GetByTenantIdAsync(tenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((CalendarConnection?)null);
+        _messagingProvider.Setup(m => m.SendTextAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var dto = new AppointmentCreateDto
+        {
+            TenantId = tenantId,
+            ClientWhatsApp = "521234567890",
+            ClientName = "Juan",
+            ServiceTypeName = "Consulta",
+            ProfessionalName = "Dra. María",
+            FechaInicio = new DateTime(2026, 8, 15, 10, 0, 0, DateTimeKind.Utc)
+        };
+
+        // Act
+        var result = await _useCase.ExecuteAsync(dto);
+
+        // Assert: el profesional se asigna y la política valida el canal de ese profesional
+        result.Should().NotBeNull();
+        result!.ProfessionalId.Should().Be(professionalId);
+        result.ProfessionalName.Should().Be("Dra. María");
+        _appointmentRepo.Verify(r => r.CreateAsync(
+            It.Is<Appointment>(a => a.IdProfessional == professionalId),
+            It.IsAny<CancellationToken>()));
+        _bookingPolicy.Verify(p => p.ValidateAsync(
+            tenantId, It.IsAny<DateTime>(), It.IsAny<DateTime>(),
+            It.IsAny<Guid?>(), It.IsAny<int>(), professionalId, It.IsAny<CancellationToken>()));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithProfessionalOutsidePortfolio_Throws()
+    {
+        // Arrange
+        var tenantId = Guid.NewGuid();
+        var professionalId = Guid.NewGuid();
+        var serviceTypeId = Guid.NewGuid();
+
+        _clientRepo.Setup(r => r.GetByWhatsAppAsync("521234567890", tenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Client?)null);
+        _clientRepo.Setup(r => r.CreateAsync(It.IsAny<Client>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Client c, CancellationToken _) => c);
+        _serviceTypeRepo.Setup(r => r.GetByTenantIdAsync(tenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ServiceType>
+            {
+                new() { IdServiceType = serviceTypeId, IdTenant = tenantId, Nombre = "Consulta", DuracionMinutos = 45, Activo = true }
+            });
+        _professionalRepo.Setup(r => r.GetActiveByTenantAndNameAsync(tenantId, "Dra. María", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Professional { IdProfessional = professionalId, IdTenant = tenantId, Nombre = "Dra. María", Activo = true });
+        // No realiza el servicio: fuera de su cartera
+        _professionalRepo.Setup(r => r.ProvidesServiceAsync(professionalId, serviceTypeId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var dto = new AppointmentCreateDto
+        {
+            TenantId = tenantId,
+            ClientWhatsApp = "521234567890",
+            ClientName = "Juan",
+            ServiceTypeName = "Consulta",
+            ProfessionalName = "Dra. María",
+            FechaInicio = new DateTime(2026, 8, 15, 10, 0, 0, DateTimeKind.Utc)
+        };
+
+        // Act & Assert
+        var act = async () => await _useCase.ExecuteAsync(dto);
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*no realiza el servicio*");
     }
 }

@@ -314,4 +314,72 @@ public class BookingPolicyTests
         result.IsValid.Should().BeFalse();
         result.Reason.Should().Be("El horario solicitado ya está ocupado en el calendario del negocio");
     }
+
+    [Fact]
+    public async Task ValidateAsync_EventoExternoDeCitaPropia_NoBloqueaSegundaCita()
+    {
+        // Una cita local que ya creó su evento externo no debe contar DOS veces
+        // contra un servicio con capacidad para varias personas.
+        _appointmentRepo.Setup(r => r.GetByDateRangeAsync(TenantId, It.IsAny<DateTime>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Appointment>
+            {
+                new() { IdAppointment = Guid.NewGuid(), IdTenant = TenantId, Estado = "confirmed", FechaInicio = On(Monday, 10), FechaFin = On(Monday, 11), ExternalEventId = "evt-1" }
+            });
+
+        var connection = new CalendarConnection { IdTenant = TenantId, Activo = true };
+        _connectionRepo.Setup(r => r.GetByTenantIdAsync(TenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(connection);
+
+        var provider = new Mock<ICalendarProvider>();
+        provider.Setup(p => p.GetAvailabilityAsync(TenantId, It.IsAny<DateOnly>(), It.IsAny<DateOnly>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<TimeSlot>
+            {
+                new() { FechaInicio = On(Monday, 10), FechaFin = On(Monday, 11), Disponible = false, ExternalEventId = "evt-1" }
+            });
+        _providerFactory.Setup(f => f.GetProviderAsync(TenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(provider.Object);
+
+        // capacidad 2: la cita local ocupa 1 asiento; su evento externo es duplicado (no cuenta)
+        var result = await _policy.ValidateAsync(TenantId, On(Monday, 10), On(Monday, 11), capacidad: 2);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ValidateAsync_EventoExternoDeOtroProfesional_NoBloqueaCanalEnParalelo()
+    {
+        var mariaId = Guid.NewGuid();
+
+        // Dr. Carlos ya tiene su cita 10-11 con su evento externo (cita local con ExternalEventId).
+        _appointmentRepo.Setup(r => r.GetByDateRangeAsync(TenantId, It.IsAny<DateTime>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Appointment>
+            {
+                new() { IdAppointment = Guid.NewGuid(), IdTenant = TenantId, Estado = "confirmed", FechaInicio = On(Monday, 10), FechaFin = On(Monday, 11), ExternalEventId = "evt-carlos" }
+            });
+        // El canal de María está libre (sin citas suyas ni legadas).
+        _appointmentRepo.Setup(r => r.GetByDateRangeForProfessionalAsync(TenantId, It.IsAny<DateTime>(), It.IsAny<DateTime>(), mariaId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Appointment>());
+        _availabilityRepo.Setup(r => r.GetByTenantAndProfessionalAsync(TenantId, mariaId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<AvailabilityRule>());
+        _availabilityRepo.Setup(r => r.GetExceptionsByDateRangeForProfessionalAsync(TenantId, It.IsAny<DateTime>(), It.IsAny<DateTime>(), mariaId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<AvailabilityException>());
+
+        var connection = new CalendarConnection { IdTenant = TenantId, Activo = true };
+        _connectionRepo.Setup(r => r.GetByTenantIdAsync(TenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(connection);
+
+        var provider = new Mock<ICalendarProvider>();
+        provider.Setup(p => p.GetAvailabilityAsync(TenantId, It.IsAny<DateOnly>(), It.IsAny<DateOnly>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<TimeSlot>
+            {
+                new() { FechaInicio = On(Monday, 10), FechaFin = On(Monday, 11), Disponible = false, ExternalEventId = "evt-carlos" }
+            });
+        _providerFactory.Setup(f => f.GetProviderAsync(TenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(provider.Object);
+
+        // El evento externo es el de la cita de Carlos (canal paralelo): no debe bloquear a María.
+        var result = await _policy.ValidateAsync(TenantId, On(Monday, 10), On(Monday, 10, 30), professionalId: mariaId);
+
+        result.IsValid.Should().BeTrue();
+    }
 }

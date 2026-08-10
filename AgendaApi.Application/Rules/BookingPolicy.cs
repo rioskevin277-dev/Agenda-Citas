@@ -41,6 +41,7 @@ public class BookingPolicy : IBookingPolicy
         DateTime fechaFin,
         Guid? excludeAppointmentId = null,
         int capacidad = 1,
+        Guid? professionalId = null,
         CancellationToken ct = default)
     {
         if (fechaFin <= fechaInicio)
@@ -66,17 +67,36 @@ public class BookingPolicy : IBookingPolicy
             }
         }
 
-        // 2. Horario laboral + excepciones (misma semántica que BuildSlotsFromRules)
-        var rules = await _availabilityRepo.GetByTenantIdAsync(tenantId, ct) ?? new List<AvailabilityRule>();
-        var exceptions = await _availabilityRepo.GetExceptionsByDateRangeAsync(tenantId, fechaInicio, fechaFin, ct) ?? new List<AvailabilityException>();
-        if (!IsWithinWorkingHours(fechaInicio, fechaFin, rules, exceptions))
-            return BookingValidationResult.Fail("El horario solicitado está fuera del horario laboral del negocio");
+        // 2. Horario laboral + excepciones (misma semántica que CheckAvailabilityUseCase).
+        //    Con profesional se suman sus reglas personales (precedencia específica sobre negocio).
+        var businessRules = await _availabilityRepo.GetByTenantIdAsync(tenantId, ct) ?? new List<AvailabilityRule>();
+        var businessExceptions = await _availabilityRepo.GetExceptionsByDateRangeAsync(tenantId, fechaInicio, fechaFin, ct) ?? new List<AvailabilityException>();
 
-        // 3. Conflicto con citas locales, respetando la capacidad simultánea del servicio
-        var conflicting = await _appointmentRepo.GetByDateRangeAsync(tenantId, fechaInicio, fechaFin, ct);
+        var personalRules = new List<AvailabilityRule>();
+        var personalExceptions = new List<AvailabilityException>();
+        if (professionalId.HasValue)
+        {
+            personalRules = await _availabilityRepo.GetByTenantAndProfessionalAsync(tenantId, professionalId.Value, ct) ?? new List<AvailabilityRule>();
+            personalExceptions = await _availabilityRepo.GetExceptionsByDateRangeForProfessionalAsync(tenantId, fechaInicio, fechaFin, professionalId.Value, ct) ?? new List<AvailabilityException>();
+        }
+
+        if (!IsWithinWorkingHours(fechaInicio, fechaFin, businessRules, businessExceptions, personalRules, personalExceptions))
+        {
+            return professionalId.HasValue
+                ? BookingValidationResult.Fail("El horario solicitado está fuera del horario del profesional")
+                : BookingValidationResult.Fail("El horario solicitado está fuera del horario laboral del negocio");
+        }
+
+        // 3. Conflicto con citas locales.
+        //    Sin profesional: capacidad simultánea del servicio (comportamiento actual).
+        //    Con profesional: solo cuentan sus citas + las legadas sin profesional (canal ocupado o libre), capacidad 1.
+        var conflicting = professionalId.HasValue
+            ? await _appointmentRepo.GetByDateRangeForProfessionalAsync(tenantId, fechaInicio, fechaFin, professionalId.Value, ct)
+            : await _appointmentRepo.GetByDateRangeAsync(tenantId, fechaInicio, fechaFin, ct);
         var overlapCount = conflicting.Count(a => a.Estado != "cancelled"
                                                   && (excludeAppointmentId == null || a.IdAppointment != excludeAppointmentId));
-        if (overlapCount >= capacidad)
+        var effectiveCapacity = professionalId.HasValue ? 1 : capacidad;
+        if (overlapCount >= effectiveCapacity)
             return BookingValidationResult.Fail("El horario solicitado ya está ocupado");
 
         // 4. Conflicto con el calendario externo (si está conectado).
@@ -95,7 +115,28 @@ public class BookingPolicy : IBookingPolicy
                         DateOnly.FromDateTime(fechaInicio),
                         DateOnly.FromDateTime(fechaFin),
                         ct);
-                    if (externalEvents.Any(e => e.FechaInicio < fechaFin && e.FechaFin > fechaInicio))
+
+                    // Los eventos del propio sistema ya existen como CITAS LOCALES y se contaron
+                    // contra el canal/capacidad antes. Excluirlos del busy externo para no
+                    // bloquear dos veces el mismo rango (p.ej. la 2ª cita de un servicio con
+                    // capacidad N, o el canal de otro profesional en paralelo). El calendario
+                    // externo queda como bloqueo duro SOLO para los eventos manuales del dueño
+                    // (aquellos sin ExternalEventId local asociado).
+                    // NOTA: al validar el canal de un profesional se usa la lista COMPLETA de
+                    // citas del rango (no solo las de su canal): la cita de OTRO profesional
+                    // también crea su evento en el calendario compartido del tenant y su propio
+                    // evento no debe bloquear un canal paralelo.
+                    var allInRange = (professionalId.HasValue
+                        ? await _appointmentRepo.GetByDateRangeAsync(tenantId, fechaInicio, fechaFin, ct)
+                        : conflicting) ?? new List<Appointment>();
+                    var ownExternalIds = new HashSet<string>(allInRange
+                        .Where(a => a.ExternalEventId != null)
+                        .Select(a => a.ExternalEventId!));
+                    var externalEventsFiltered = externalEvents
+                        .Where(e => e.ExternalEventId == null || !ownExternalIds.Contains(e.ExternalEventId))
+                        .ToList();
+
+                    if (externalEventsFiltered.Any(e => e.FechaInicio < fechaFin && e.FechaFin > fechaInicio))
                         return BookingValidationResult.Fail("El horario solicitado ya está ocupado en el calendario del negocio");
                 }
             }
@@ -125,42 +166,24 @@ public class BookingPolicy : IBookingPolicy
     }
 
     /// <summary>
-    /// Verifica que el intervalo [fechaInicio, fechaFin) quede completamente dentro del
-    /// horario laboral de su día (reglas recurrentes o excepción del día).
+    /// Verifica que el intervalo [fechaInicio, fechaFin) quede completamente dentro de las
+    /// ventanas activas de su día (misma semántica que CheckAvailabilityUseCase, vía AvailabilityResolver).
     /// </summary>
     private static bool IsWithinWorkingHours(
         DateTime fechaInicio,
         DateTime fechaFin,
-        List<AvailabilityRule> rules,
-        List<AvailabilityException> exceptions)
+        List<AvailabilityRule> businessRules,
+        List<AvailabilityException> businessExceptions,
+        List<AvailabilityRule> personalRules,
+        List<AvailabilityException> personalExceptions)
     {
         // Una reserva no puede cruzar de día
         if (DateOnly.FromDateTime(fechaInicio) != DateOnly.FromDateTime(fechaFin))
             return false;
 
-        var date = DateOnly.FromDateTime(fechaInicio);
-        var dayExceptions = exceptions
-            .Where(e => DateOnly.FromDateTime(e.Fecha) == date)
-            .ToList();
+        var windows = AvailabilityResolver.ResolveDayWindows(
+            DateOnly.FromDateTime(fechaInicio), businessRules, businessExceptions, personalRules, personalExceptions);
 
-        // Si el día tiene excepción, ésta reemplaza las reglas (mismo comportamiento que BuildSlotsFromRules)
-        if (dayExceptions.Count > 0)
-        {
-            if (dayExceptions.Any(e => e.DiaCompleto))
-                return false;
-
-            return dayExceptions
-                .Where(e => !e.DiaCompleto && e.HoraInicio.HasValue && e.HoraFin.HasValue)
-                .Any(e => IsContained(fechaInicio, fechaFin, e.HoraInicio!.Value, e.HoraFin!.Value));
-        }
-
-        // Día normal: reglas recurrentes para ese día de la semana (1=Lunes ... 7=Domingo)
-        var dayOfWeek = ((int)date.DayOfWeek == 0) ? 7 : (int)date.DayOfWeek;
-        return rules
-            .Where(r => r.DiaSemana == dayOfWeek && r.Activo)
-            .Any(r => IsContained(fechaInicio, fechaFin, r.HoraInicio, r.HoraFin));
+        return windows.Any(w => fechaInicio.TimeOfDay >= w.HoraInicio && fechaFin.TimeOfDay <= w.HoraFin);
     }
-
-    private static bool IsContained(DateTime fechaInicio, DateTime fechaFin, TimeSpan horaInicio, TimeSpan horaFin)
-        => fechaInicio.TimeOfDay >= horaInicio && fechaFin.TimeOfDay <= horaFin;
 }

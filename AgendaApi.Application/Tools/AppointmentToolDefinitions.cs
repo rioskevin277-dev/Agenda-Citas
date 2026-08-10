@@ -72,6 +72,12 @@ public static class AppointmentToolDefinitions
                             type = "string",
                             description = "Opcional. Nombre del tipo de servicio para filtrar disponibilidad " +
                                           "(ej: Corte de pelo, Consulta, Baño). Si se omite, muestra toda la disponibilidad."
+                        },
+                        professional_name = new
+                        {
+                            type = "string",
+                            description = "Opcional. Nombre del profesional para filtrar su disponibilidad " +
+                                          "(ej: Dra. María, Dr. Carlos). Si se omite, muestra la del negocio."
                         }
                     },
                     required = new[] { "fecha_inicio", "fecha_fin" }
@@ -112,6 +118,12 @@ public static class AppointmentToolDefinitions
                         {
                             type = "string",
                             description = "Nombre del tipo de servicio a agendar (ej: Corte de pelo, Consulta)"
+                        },
+                        professional_name = new
+                        {
+                            type = "string",
+                            description = "Opcional. Profesional que atenderá la cita (ej: Dra. María, Dr. Carlos). " +
+                                          "Usa el nombre exacto que figura como disponible."
                         },
                         fecha_inicio = new
                         {
@@ -283,7 +295,8 @@ public static class AppointmentToolDefinitions
                 {
                     fecha_inicio = new { type = "string", description = "Fecha inicio (YYYY-MM-DD)" },
                     fecha_fin = new { type = "string", description = "Fecha fin (YYYY-MM-DD)" },
-                    service_type_name = new { type = "string", description = "Tipo de servicio (opcional)" }
+                    service_type_name = new { type = "string", description = "Tipo de servicio (opcional)" },
+                    professional_name = new { type = "string", description = "Profesional (opcional) — ej: Dra. María" }
                 },
                 required = new[] { "fecha_inicio", "fecha_fin" }
             }
@@ -304,6 +317,7 @@ public static class AppointmentToolDefinitions
                     client_whatsapp = new { type = "string", description = "WhatsApp del cliente" },
                     client_name = new { type = "string", description = "Nombre del cliente" },
                     service_type_name = new { type = "string", description = "Tipo de servicio" },
+                    professional_name = new { type = "string", description = "Profesional que atiende (opcional) — ej: Dra. María" },
                     fecha_inicio = new { type = "string", description = "Fecha/hora inicio (ISO 8601)" },
                     notas = new { type = "string", description = "Notas opcionales" }
                 },

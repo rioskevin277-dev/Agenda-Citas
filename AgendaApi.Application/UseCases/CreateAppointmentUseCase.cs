@@ -13,6 +13,7 @@ public class CreateAppointmentUseCase
     private readonly IAppointmentRepository _appointmentRepo;
     private readonly IClientRepository _clientRepo;
     private readonly IServiceTypeRepository _serviceTypeRepo;
+    private readonly IProfessionalRepository _professionalRepo;
     private readonly ICalendarConnectionRepository _connectionRepo;
     private readonly ICalendarProviderFactory _providerFactory;
     private readonly IMessagingProvider _messagingProvider;
@@ -23,6 +24,7 @@ public class CreateAppointmentUseCase
         IAppointmentRepository appointmentRepo,
         IClientRepository clientRepo,
         IServiceTypeRepository serviceTypeRepo,
+        IProfessionalRepository professionalRepo,
         ICalendarConnectionRepository connectionRepo,
         ICalendarProviderFactory providerFactory,
         IMessagingProvider messagingProvider,
@@ -32,6 +34,7 @@ public class CreateAppointmentUseCase
         _appointmentRepo = appointmentRepo;
         _clientRepo = clientRepo;
         _serviceTypeRepo = serviceTypeRepo;
+        _professionalRepo = professionalRepo;
         _connectionRepo = connectionRepo;
         _providerFactory = providerFactory;
         _messagingProvider = messagingProvider;
@@ -95,16 +98,40 @@ public class CreateAppointmentUseCase
         if (serviceType == null || !serviceType.Activo)
             throw new InvalidOperationException($"Tipo de servicio '{dto.ServiceTypeName}' no encontrado o inactivo");
 
+        // Resolver profesional por ID o nombre (flujo AI: "Dra. María", "Dr. Carlos")
+        Professional? professional = null;
+        if (dto.ProfessionalId.HasValue)
+        {
+            professional = await _professionalRepo.GetByIdAsync(dto.ProfessionalId.Value, ct);
+        }
+        else if (!string.IsNullOrWhiteSpace(dto.ProfessionalName))
+        {
+            professional = await _professionalRepo.GetActiveByTenantAndNameAsync(dto.TenantId, dto.ProfessionalName, ct);
+        }
+
+        if (dto.ProfessionalId.HasValue || !string.IsNullOrWhiteSpace(dto.ProfessionalName))
+        {
+            if (professional == null || !professional.Activo)
+                throw new InvalidOperationException($"Profesional '{dto.ProfessionalName}' no encontrado");
+
+            // Relación Service → Profesional: sólo puede agendar servicios de su cartera
+            var provides = await _professionalRepo.ProvidesServiceAsync(professional.IdProfessional, serviceType.IdServiceType, ct);
+            if (!provides)
+                throw new InvalidOperationException($"El profesional {professional.Nombre} no realiza el servicio {serviceType.Nombre}");
+        }
+
         // Calculate end time based on service duration if FechaFin not set
         var fechaFin = dto.FechaFin != default
             ? dto.FechaFin
             : dto.FechaInicio.AddMinutes(serviceType.DuracionMinutos + serviceType.BufferMinutos);
 
         // Validar la reserva contra las reglas del negocio
-        // (antelación, horario laboral, feriados/excepciones, capacidad, calendario externo)
+        // (antelación, horario laboral, feriados/excepciones, capacidad, calendario externo).
+        // Con profesional se valida el canal de ESE profesional (sus citas + legadas).
         var validation = await _bookingPolicy.ValidateAsync(
             dto.TenantId, dto.FechaInicio, fechaFin,
-            capacidad: serviceType.CapacidadMaxima, ct: ct);
+            capacidad: serviceType.CapacidadMaxima,
+            professionalId: professional?.IdProfessional, ct: ct);
         if (!validation.IsValid)
             throw new InvalidOperationException(validation.Reason);
 
@@ -115,6 +142,7 @@ public class CreateAppointmentUseCase
             IdTenant = dto.TenantId,
             IdClient = client.IdClient,
             IdServiceType = serviceType.IdServiceType,
+            IdProfessional = professional?.IdProfessional,
             FechaInicio = dto.FechaInicio,
             FechaFin = fechaFin,
             Estado = "confirmed",
@@ -149,9 +177,10 @@ public class CreateAppointmentUseCase
         try
         {
             var fechaStr = appointment.FechaInicio.ToString("dd/MM/yyyy 'a las' HH:mm");
+            var profStr = professional != null ? $"\n👤 Con: {professional.Nombre}" : "";
             await _messagingProvider.SendTextAsync(
                 client.WhatsApp,
-                $"✅ Cita confirmada: {serviceType.Nombre}\n📅 {fechaStr}\nGracias por agendar. Si necesitas cambiar o cancelar, avísame.",
+                $"✅ Cita confirmada: {serviceType.Nombre}{profStr}\n📅 {fechaStr}\nGracias por agendar. Si necesitas cambiar o cancelar, avísame.",
                 ct);
         }
         catch
@@ -159,10 +188,10 @@ public class CreateAppointmentUseCase
             // Notification failure shouldn't break the flow
         }
 
-        return MapToDto(appointment, client.Nombre, serviceType.Nombre);
+        return MapToDto(appointment, client.Nombre, serviceType.Nombre, professional?.Nombre);
     }
 
-    private static AppointmentResponseDto MapToDto(Appointment a, string? clientName, string? serviceName)
+    private static AppointmentResponseDto MapToDto(Appointment a, string? clientName, string? serviceName, string? professionalName = null)
     {
         return new AppointmentResponseDto
         {
@@ -172,6 +201,8 @@ public class CreateAppointmentUseCase
             ClientName = clientName,
             ServiceTypeId = a.IdServiceType,
             ServiceTypeName = serviceName,
+            ProfessionalId = a.IdProfessional,
+            ProfessionalName = professionalName,
             FechaInicio = a.FechaInicio,
             FechaFin = a.FechaFin,
             Status = a.Estado,

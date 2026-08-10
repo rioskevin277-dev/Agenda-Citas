@@ -1,4 +1,5 @@
 using AgendaApi.Application.DTOs;
+using AgendaApi.Application.Rules;
 using AgendaApi.Domain.Entities;
 using AgendaApi.Domain.Ports;
 using Microsoft.Extensions.Logging;
@@ -17,6 +18,7 @@ public class CheckAvailabilityUseCase
     private readonly ICalendarConnectionRepository _connectionRepo;
     private readonly ICalendarProviderFactory _providerFactory;
     private readonly IServiceTypeRepository _serviceTypeRepo;
+    private readonly IProfessionalRepository _professionalRepo;
     private readonly ILogger<CheckAvailabilityUseCase> _logger;
 
     public CheckAvailabilityUseCase(
@@ -25,6 +27,7 @@ public class CheckAvailabilityUseCase
         ICalendarConnectionRepository connectionRepo,
         ICalendarProviderFactory providerFactory,
         IServiceTypeRepository serviceTypeRepo,
+        IProfessionalRepository professionalRepo,
         ILogger<CheckAvailabilityUseCase> logger)
     {
         _availabilityRepo = availabilityRepo;
@@ -32,6 +35,7 @@ public class CheckAvailabilityUseCase
         _connectionRepo = connectionRepo;
         _providerFactory = providerFactory;
         _serviceTypeRepo = serviceTypeRepo;
+        _professionalRepo = professionalRepo;
         _logger = logger;
     }
 
@@ -53,20 +57,42 @@ public class CheckAvailabilityUseCase
             filterServiceType = await _serviceTypeRepo.GetByIdAsync(query.ServiceTypeId.Value, ct);
         }
 
-        // 1. Get recurring availability rules
-        var rules = await _availabilityRepo.GetByTenantIdAsync(query.TenantId, ct);
+        // Resolve professional by ID or name (flujo AI)
+        Professional? filterProfessional = null;
+        if (query.ProfessionalId.HasValue)
+        {
+            filterProfessional = await _professionalRepo.GetByIdAsync(query.ProfessionalId.Value, ct);
+        }
+        else if (!string.IsNullOrWhiteSpace(query.ProfessionalName))
+        {
+            filterProfessional = await _professionalRepo.GetActiveByTenantAndNameAsync(
+                query.TenantId, query.ProfessionalName, ct);
+        }
 
-        // 2. Get exceptions (holidays, special hours)
-        var exceptions = await _availabilityRepo.GetExceptionsByDateRangeAsync(query.TenantId, from, to, ct);
+        // 1. Reglas de disponibilidad: negocio + personales del profesional si se filtra por uno
+        var businessRules = await _availabilityRepo.GetByTenantIdAsync(query.TenantId, ct);
+        var businessExceptions = await _availabilityRepo.GetExceptionsByDateRangeAsync(query.TenantId, from, to, ct);
 
-        // 3. Build base available slots from rules (minus exceptions)
-        var availableSlots = BuildSlotsFromRules(rules, exceptions, query.FechaInicio, query.FechaFin);
+        var personalRules = new List<AvailabilityRule>();
+        var personalExceptions = new List<AvailabilityException>();
+        if (filterProfessional != null)
+        {
+            personalRules = await _availabilityRepo.GetByTenantAndProfessionalAsync(query.TenantId, filterProfessional.IdProfessional, ct);
+            personalExceptions = await _availabilityRepo.GetExceptionsByDateRangeForProfessionalAsync(query.TenantId, from, to, filterProfessional.IdProfessional, ct);
+        }
+
+        // 3. Build base available slots from rules (minus exceptions), con la misma semántica del write path
+        var availableSlots = BuildSlotsFromRules(businessRules, businessExceptions, personalRules, personalExceptions, query.FechaInicio, query.FechaFin);
 
         if (availableSlots.Count == 0)
             return new List<TimeSlotDto>();
 
-        // 4. Citas locales existentes en el rango: consumen la capacidad del servicio
-        var existingAppointments = await _appointmentRepo.GetByDateRangeAsync(query.TenantId, from, to, ct);
+        // 4. Citas locales existentes en el rango.
+        //    Sin profesional: consumen la capacidad del servicio (todas).
+        //    Con profesional: solo las que ocupan su canal (suyas + legadas sin profesional).
+        var existingAppointments = filterProfessional != null
+            ? await _appointmentRepo.GetByDateRangeForProfessionalAsync(query.TenantId, from, to, filterProfessional.IdProfessional, ct)
+            : await _appointmentRepo.GetByDateRangeAsync(query.TenantId, from, to, ct);
         var localAppointments = existingAppointments
             .Where(a => a.Estado != "cancelled")
             .Select(a => new TimeSlot
@@ -105,9 +131,27 @@ public class CheckAvailabilityUseCase
             }
         }
 
+        // Los eventos del propio sistema ya están representados como citas locales y se
+        // recortaron contra el canal/capacidad antes. Excluirlos del busy externo para no
+        // bloquear dos veces el mismo rango (p.ej. el canal de otro profesional en paralelo
+        // o una 2ª cita de un servicio con capacidad N). El calendario externo queda como
+        // bloqueo duro SOLO para los eventos manuales del dueño (sin ExternalEventId local).
+        // Se usa la lista COMPLETA de citas del rango (no solo las del canal filtrado): la
+        // cita de OTRO profesional también crea su evento en el calendario compartido del tenant.
+        var allAppointmentsForDedup = (filterProfessional != null
+            ? await _appointmentRepo.GetByDateRangeAsync(query.TenantId, from, to, ct)
+            : existingAppointments) ?? new List<Appointment>();
+        var ownExternalIds = new HashSet<string>(allAppointmentsForDedup
+            .Where(a => a.ExternalEventId != null)
+            .Select(a => a.ExternalEventId!));
+        externalBusy = externalBusy
+            .Where(e => e.ExternalEventId == null || !ownExternalIds.Contains(e.ExternalEventId))
+            .ToList();
+
         // 6. Fusionar: recortar intervalos donde la ocupación alcanza la capacidad.
-        //    Sin filtro de servicio la capacidad es 1 (cualquier cita bloquea = comportamiento actual).
-        var capacidad = filterServiceType?.CapacidadMaxima ?? 1;
+        //    Con profesional el canal es 1 (sus citas + legadas bloquean). Sin profesional,
+        //    la capacidad es la del servicio (comportamiento actual).
+        var capacidad = filterProfessional != null ? 1 : (filterServiceType?.CapacidadMaxima ?? 1);
         var mergedSlots = MergeSlotsWithCapacity(availableSlots, localAppointments, externalBusy, capacidad);
 
         var result = mergedSlots
@@ -117,7 +161,8 @@ public class CheckAvailabilityUseCase
                 Start = s.FechaInicio,
                 End = s.FechaFin,
                 Disponible = s.Disponible,
-                ServiceTypeName = filterServiceType?.Nombre
+                ServiceTypeName = filterServiceType?.Nombre,
+                ProfessionalName = filterProfessional?.Nombre
             })
             .OrderBy(s => s.Start)
             .ToList();
@@ -125,45 +170,30 @@ public class CheckAvailabilityUseCase
         return result;
     }
 
+    /// <summary>
+/// Construye los slots libres por día aplicando la misma precedencia que BookingPolicy
+/// (AvailabilityResolver): negocio cerrado, excepción personal, reglas personales,
+/// excepción de negocio y reglas de negocio como fallback.
+/// </summary>
     private static List<TimeSlot> BuildSlotsFromRules(
-        List<AvailabilityRule> rules,
-        List<AvailabilityException> exceptions,
+        List<AvailabilityRule> businessRules,
+        List<AvailabilityException> businessExceptions,
+        List<AvailabilityRule> personalRules,
+        List<AvailabilityException> personalExceptions,
         DateOnly from, DateOnly to)
     {
         var slots = new List<TimeSlot>();
-        var exceptionDays = exceptions
-            .GroupBy(e => DateOnly.FromDateTime(e.Fecha))
-            .ToDictionary(g => g.Key, g => g.ToList());
-
         for (var date = from; date <= to; date = date.AddDays(1))
         {
-            var dayOfWeek = (int)date.DayOfWeek == 0 ? 7 : (int)date.DayOfWeek;
+            var windows = AvailabilityResolver.ResolveDayWindows(
+                date, businessRules, businessExceptions, personalRules, personalExceptions);
 
-            if (exceptionDays.TryGetValue(date, out var dayExceptions))
-            {
-                var fullDayOff = dayExceptions.FirstOrDefault(e => e.DiaCompleto);
-                if (fullDayOff != null)
-                    continue;
-
-                foreach (var ex in dayExceptions.Where(e => !e.DiaCompleto && e.HoraInicio.HasValue && e.HoraFin.HasValue))
-                {
-                    slots.Add(new TimeSlot
-                    {
-                        FechaInicio = date.ToDateTime(TimeOnly.FromTimeSpan(ex.HoraInicio!.Value), DateTimeKind.Utc),
-                        FechaFin = date.ToDateTime(TimeOnly.FromTimeSpan(ex.HoraFin!.Value), DateTimeKind.Utc),
-                        Disponible = true
-                    });
-                }
-                continue;
-            }
-
-            var dayRules = rules.Where(r => r.DiaSemana == dayOfWeek && r.Activo).ToList();
-            foreach (var rule in dayRules)
+            foreach (var w in windows)
             {
                 slots.Add(new TimeSlot
                 {
-                    FechaInicio = date.ToDateTime(TimeOnly.FromTimeSpan(rule.HoraInicio), DateTimeKind.Utc),
-                    FechaFin = date.ToDateTime(TimeOnly.FromTimeSpan(rule.HoraFin), DateTimeKind.Utc),
+                    FechaInicio = date.ToDateTime(TimeOnly.FromTimeSpan(w.HoraInicio), DateTimeKind.Utc),
+                    FechaFin = date.ToDateTime(TimeOnly.FromTimeSpan(w.HoraFin), DateTimeKind.Utc),
                     Disponible = true
                 });
             }

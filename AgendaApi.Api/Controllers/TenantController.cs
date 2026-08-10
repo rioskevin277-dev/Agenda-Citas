@@ -12,6 +12,7 @@ public class TenantController : ControllerBase
     private readonly ITenantRepository _tenantRepo;
     private readonly ICalendarConnectionRepository _connectionRepo;
     private readonly IServiceTypeRepository _serviceTypeRepo;
+    private readonly IProfessionalRepository _professionalRepo;
     private readonly ITokenEncryptionService _tokenEncryption;
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<TenantController> _logger;
@@ -20,6 +21,7 @@ public class TenantController : ControllerBase
         ITenantRepository tenantRepo,
         ICalendarConnectionRepository connectionRepo,
         IServiceTypeRepository serviceTypeRepo,
+        IProfessionalRepository professionalRepo,
         ITokenEncryptionService tokenEncryption,
         IUnitOfWork unitOfWork,
         ILogger<TenantController> logger)
@@ -27,6 +29,7 @@ public class TenantController : ControllerBase
         _tenantRepo = tenantRepo;
         _connectionRepo = connectionRepo;
         _serviceTypeRepo = serviceTypeRepo;
+        _professionalRepo = professionalRepo;
         _tokenEncryption = tokenEncryption;
         _unitOfWork = unitOfWork;
         _logger = logger;
@@ -169,6 +172,113 @@ public class TenantController : ControllerBase
             bufferMinutos = serviceType.BufferMinutos
         });
     }
+
+    [HttpGet("{id:guid}/professionals")]
+    public async Task<IActionResult> GetProfessionals(Guid id, CancellationToken ct)
+    {
+        var tenant = await _tenantRepo.GetByIdAsync(id, ct);
+        if (tenant == null)
+            return NotFound(new { error = "Tenant no encontrado" });
+
+        var professionals = await _professionalRepo.GetActiveByTenantIdAsync(id, ct);
+        return Ok(professionals.Select(p => new
+        {
+            p.IdProfessional,
+            p.Nombre,
+            p.Email,
+            p.Telefono,
+            p.Activo
+        }));
+    }
+
+    [HttpPost("{id:guid}/professionals")]
+    public async Task<IActionResult> AddProfessional(Guid id, [FromBody] AddProfessionalRequest request, CancellationToken ct)
+    {
+        var tenant = await _tenantRepo.GetByIdAsync(id, ct);
+        if (tenant == null)
+            return NotFound(new { error = "Tenant no encontrado" });
+
+        var professional = new Domain.Entities.Professional
+        {
+            IdProfessional = Guid.NewGuid(),
+            IdTenant = id,
+            Nombre = request.Nombre,
+            Email = request.Email,
+            Telefono = request.Telefono,
+            Activo = true,
+            FechaCreacion = DateTime.UtcNow
+        };
+
+        await _professionalRepo.CreateAsync(professional, ct);
+
+        // Vincular servicios iniciales de la cartera (si vienen en la request)
+        if (request.ServiceTypeIds is { Count: > 0 })
+        {
+            foreach (var serviceTypeId in request.ServiceTypeIds)
+            {
+                await _professionalRepo.AddServiceAsync(new Domain.Entities.ProfessionalService
+                {
+                    IdProfessional = professional.IdProfessional,
+                    IdServiceType = serviceTypeId,
+                    Activo = true
+                }, ct);
+            }
+        }
+
+        await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("[Tenant] Profesional agregado: {Nombre} al tenant {Id}", request.Nombre, id);
+
+        return Ok(new
+        {
+            message = "Profesional agregado",
+            id = professional.IdProfessional,
+            nombre = professional.Nombre
+        });
+    }
+
+    [HttpPost("{id:guid}/professionals/{professionalId:guid}/services")]
+    public async Task<IActionResult> AddProfessionalService(Guid id, Guid professionalId, [FromBody] AddServiceTypeRequest request, CancellationToken ct)
+    {
+        var tenant = await _tenantRepo.GetByIdAsync(id, ct);
+        if (tenant == null)
+            return NotFound(new { error = "Tenant no encontrado" });
+
+        var professional = await _professionalRepo.GetByIdAsync(professionalId, ct);
+        if (professional == null || professional.IdTenant != id)
+            return NotFound(new { error = "Profesional no encontrado" });
+
+        // Vincular el profesional a un servicio existente del tenant por nombre.
+        // (El profesional ejecuta el servicio tal como está definido en el negocio.)
+        var serviceTypes = await _serviceTypeRepo.GetByTenantIdAsync(id, ct);
+        var serviceType = serviceTypes.FirstOrDefault(s =>
+            s.Nombre.Equals(request.Nombre, StringComparison.OrdinalIgnoreCase));
+        if (serviceType == null)
+            return BadRequest(new { error = $"Servicio '{request.Nombre}' no existe en este tenant" });
+
+        await _professionalRepo.AddServiceAsync(new Domain.Entities.ProfessionalService
+        {
+            IdProfessional = professionalId,
+            IdServiceType = serviceType.IdServiceType,
+            Activo = true
+        }, ct);
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        return Ok(new
+        {
+            message = "Servicio vinculado al profesional",
+            professionalId,
+            serviceTypeId = serviceType.IdServiceType,
+            serviceTypeName = serviceType.Nombre
+        });
+    }
+}
+
+public record AddProfessionalRequest
+{
+    public string Nombre { get; init; } = string.Empty;
+    public string? Email { get; init; }
+    public string? Telefono { get; init; }
+    public List<Guid>? ServiceTypeIds { get; init; }
 }
 
 public record CreateTenantRequest

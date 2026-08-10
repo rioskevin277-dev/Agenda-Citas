@@ -61,10 +61,14 @@ public class ChatOrchestratorService
         var serviceTypeRepo = services.GetRequiredService<IServiceTypeRepository>();
         var serviceTypes = await serviceTypeRepo.GetByTenantIdAsync(tenantId, ct);
 
+        // Profesionales reales del tenant para que la IA use nombres exactos al asignar quién atiende.
+        var professionalRepo = services.GetRequiredService<IProfessionalRepository>();
+        var professionals = await professionalRepo.GetActiveByTenantIdAsync(tenantId, ct);
+
         _logger.LogInformation("[Orchestrator] Procesando mensaje de {Phone} para tenant {Tenant}",
             userPhone, tenantId);
 
-        var systemPrompt = GetSystemPrompt(userPhone, clientName, serviceTypes);
+        var systemPrompt = GetSystemPrompt(userPhone, clientName, serviceTypes, professionals);
 
         // Cargar historial previo de la conversación (si existe) para conservar contexto.
         var conversationKey = ConversationMemoryService.GetKey(tenantId, userPhone);
@@ -193,7 +197,7 @@ public class ChatOrchestratorService
         }
     }
 
-    private static string GetSystemPrompt(string userPhone, string? clientName, List<Domain.Entities.ServiceType>? serviceTypes = null)
+    private static string GetSystemPrompt(string userPhone, string? clientName, List<Domain.Entities.ServiceType>? serviceTypes = null, List<Domain.Entities.Professional>? professionals = null)
     {
         string senderIdentity = string.IsNullOrWhiteSpace(clientName)
             ? $"El cliente que te escribe tiene el WhatsApp {userPhone}."
@@ -207,6 +211,16 @@ public class ChatOrchestratorService
 SERVICIOS DISPONIBLES (lista exacta del negocio — NO inventes ni modifiques estos nombres, NO agregues servicios que no esten aqui):
 " + string.Join("\n", serviceTypes.Where(s => s.Activo).Select(s => $"- {s.Nombre}")) + @"
 - Cuando el cliente pida un servicio que NO este en esta lista, informale que no esta disponible y sugiere los que si hay. NUNCA intentes agendar un servicio fuera de esta lista."
+            : "";
+
+        // Profesionales disponibles: la IA debe usar nombres EXACTOS de esta lista al asignar
+        // quién atiende la cita (igual que con los servicios).
+        string profesionalesDisponibles = professionals is { Count: > 0 }
+            ? @"
+
+PROFESIONALES (lista exacta del negocio — quiénes atienden citas):
+" + string.Join("\n", professionals.Where(p => p.Activo).Select(p => $"- {p.Nombre}")) + @"
+- Si el cliente pide un profesional o pregunta con quién será atendido, pregunta cuál prefiere y usa SIEMPRE un nombre de esta lista exacta en create_appointment."
             : "";
 
         // Inyectar la fecha actual: los LLM no conocen la fecha real y tienden a hibernar el año
@@ -244,7 +258,7 @@ REGLAS CRITICAS SOBRE LOS DATOS DEL CLIENTE:
 - El WhatsApp del cliente SIEMPRE es el numero real " + userPhone + @". NUNCA lo inventes ni uses numeros de ejemplo (como 1234567890).
 - Cuando la herramienta create_appointment pida client_whatsapp, usa SIEMPRE " + userPhone + @".
 - Usa el nombre del cliente solo si lo confirmo en la conversacion; si no lo sabes, no lo inventes.
-" + serviciosDisponibles + @"
+" + serviciosDisponibles + profesionalesDisponibles + @"
 
 HERRAMIENTAS DISPONIBLES:
 - check_availability: Consultar horarios disponibles
@@ -275,7 +289,8 @@ HERRAMIENTAS DISPONIBLES:
             TenantId = tenantId,
             FechaInicio = fechaInicio,
             FechaFin = fechaFin,
-            ServiceTypeName = args.TryGetProperty("service_type_name", out var st) ? st.GetString() : null
+            ServiceTypeName = args.TryGetProperty("service_type_name", out var st) ? st.GetString() : null,
+            ProfessionalName = args.TryGetProperty("professional_name", out var prof) ? prof.GetString() : null
         };
 
         var slots = await useCase.ExecuteAsync(dto, ct);
@@ -319,6 +334,7 @@ HERRAMIENTAS DISPONIBLES:
             ClientWhatsApp = userPhone,
             ClientName = resolvedName!,
             ServiceTypeName = args.GetProperty("service_type_name").GetString()!,
+            ProfessionalName = args.TryGetProperty("professional_name", out var prof) ? prof.GetString() : null,
             FechaInicio = DateTime.Parse(args.GetProperty("fecha_inicio").GetString()!),
             Notas = args.TryGetProperty("notas", out var notas) ? notas.GetString() : null
         };
@@ -337,6 +353,7 @@ HERRAMIENTAS DISPONIBLES:
             {
                 id = response.Id,
                 serviceType = response.ServiceTypeName,
+                professional = response.ProfessionalName,
                 start = response.FechaInicio.ToString("yyyy-MM-ddTHH:mm:ssZ"),
                 end = response.FechaFin.ToString("yyyy-MM-ddTHH:mm:ssZ"),
                 status = response.Status,

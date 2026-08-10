@@ -15,7 +15,10 @@ public class AppointmentRepository : IAppointmentRepository
     }
 
     public async Task<Appointment?> GetByIdAsync(Guid id, CancellationToken ct = default)
-        => await _context.Appointments.FindAsync(new object[] { id }, ct);
+        // Include Professional para exponer el nombre del profesional en el detalle de la cita.
+        => await _context.Appointments
+            .Include(a => a.Professional)
+            .FirstOrDefaultAsync(a => a.IdAppointment == id, ct);
 
     public async Task<List<Appointment>> GetByTenantIdAsync(Guid tenantId, DateTime? from = null, DateTime? to = null, CancellationToken ct = default)
     {
@@ -34,6 +37,17 @@ public class AppointmentRepository : IAppointmentRepository
     public async Task<List<Appointment>> GetByDateRangeAsync(Guid tenantId, DateTime from, DateTime to, CancellationToken ct = default)
         => await _context.Appointments
             .Where(a => a.IdTenant == tenantId && a.FechaInicio < to && a.FechaFin > from)
+            .ToListAsync(ct);
+
+    /// <summary>
+    /// Citas que ocupan el canal de un profesional: sus propias citas (IdProfessional == professionalId)
+    /// más las legadas sin profesional (IdProfessional == null), que por compatibilidad bloquean a cualquiera.
+    /// </summary>
+    public async Task<List<Appointment>> GetByDateRangeForProfessionalAsync(Guid tenantId, DateTime from, DateTime to, Guid professionalId, CancellationToken ct = default)
+        => await _context.Appointments
+            .Where(a => a.IdTenant == tenantId
+                        && a.FechaInicio < to && a.FechaFin > from
+                        && (a.IdProfessional == professionalId || a.IdProfessional == null))
             .ToListAsync(ct);
 
     public async Task<Appointment> CreateAsync(Appointment appointment, CancellationToken ct = default)

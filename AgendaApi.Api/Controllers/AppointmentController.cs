@@ -16,6 +16,7 @@ public class AppointmentController : ControllerBase
     private readonly RescheduleAppointmentUseCase _rescheduleUseCase;
     private readonly CheckAvailabilityUseCase _checkAvailabilityUseCase;
     private readonly IAppointmentRepository _appointmentRepo;
+    private readonly IProfessionalRepository _professionalRepo;
     private readonly ITenantContext _tenantContext;
 
     public AppointmentController(
@@ -24,6 +25,7 @@ public class AppointmentController : ControllerBase
         RescheduleAppointmentUseCase rescheduleUseCase,
         CheckAvailabilityUseCase checkAvailabilityUseCase,
         IAppointmentRepository appointmentRepo,
+        IProfessionalRepository professionalRepo,
         ITenantContext tenantContext)
     {
         _createUseCase = createUseCase;
@@ -31,6 +33,7 @@ public class AppointmentController : ControllerBase
         _rescheduleUseCase = rescheduleUseCase;
         _checkAvailabilityUseCase = checkAvailabilityUseCase;
         _appointmentRepo = appointmentRepo;
+        _professionalRepo = professionalRepo;
         _tenantContext = tenantContext;
     }
 
@@ -41,7 +44,9 @@ public class AppointmentController : ControllerBase
     public async Task<IActionResult> GetAvailability(
         [FromQuery] DateOnly fechaInicio,
         [FromQuery] DateOnly fechaFin,
-        CancellationToken ct)
+        [FromQuery] Guid? professionalId = null,
+        [FromQuery] string? professionalName = null,
+        CancellationToken ct = default)
     {
         if (!_tenantContext.IsSet)
             return Unauthorized(new { error = "Tenant no configurado" });
@@ -50,7 +55,9 @@ public class AppointmentController : ControllerBase
         {
             TenantId = _tenantContext.TenantId,
             FechaInicio = fechaInicio,
-            FechaFin = fechaFin
+            FechaFin = fechaFin,
+            ProfessionalId = professionalId,
+            ProfessionalName = professionalName
         };
 
         var slots = await _checkAvailabilityUseCase.ExecuteAsync(query, ct);
@@ -124,12 +131,17 @@ public class AppointmentController : ControllerBase
             return Unauthorized(new { error = "Tenant no configurado" });
 
         var appointments = await _appointmentRepo.GetByTenantIdAsync(_tenantContext.TenantId, from, to, ct);
+        var professionals = await _professionalRepo.GetActiveByTenantIdAsync(_tenantContext.TenantId, ct);
+        var nameByProfessional = professionals.ToDictionary(p => p.IdProfessional, p => p.Nombre);
+
         var result = appointments.Select(a => new AppointmentResponseDto
         {
             Id = a.IdAppointment,
             TenantId = a.IdTenant,
             ClientId = a.IdClient,
             ServiceTypeId = a.IdServiceType,
+            ProfessionalId = a.IdProfessional,
+            ProfessionalName = a.IdProfessional.HasValue && nameByProfessional.TryGetValue(a.IdProfessional.Value, out var profName) ? profName : null,
             FechaInicio = a.FechaInicio,
             FechaFin = a.FechaFin,
             Status = a.Estado,
@@ -156,6 +168,8 @@ public class AppointmentController : ControllerBase
             TenantId = appointment.IdTenant,
             ClientId = appointment.IdClient,
             ServiceTypeId = appointment.IdServiceType,
+            ProfessionalId = appointment.IdProfessional,
+            ProfessionalName = appointment.Professional?.Nombre,
             FechaInicio = appointment.FechaInicio,
             FechaFin = appointment.FechaFin,
             Status = appointment.Estado,

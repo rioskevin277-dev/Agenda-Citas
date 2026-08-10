@@ -36,6 +36,7 @@ public static class DependencyInjection
         services.AddScoped<IAppointmentRepository, AppointmentRepository>();
         services.AddScoped<IClientRepository, ClientRepository>();
         services.AddScoped<IServiceTypeRepository, ServiceTypeRepository>();
+        services.AddScoped<IProfessionalRepository, ProfessionalRepository>();
         services.AddScoped<IAvailabilityRepository, AvailabilityRepository>();
 
         // Tenant Context (scoped)

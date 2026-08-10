@@ -23,6 +23,13 @@ public class Appointment
     public Guid IdServiceType { get; set; }
 
     /// <summary>
+    /// Profesional asignado a la cita (nullable = cita "del negocio",
+    /// bloquea a cualquier profesional en la lógica de disponibilidad).
+    /// </summary>
+    [Column("id_professional")]
+    public Guid? IdProfessional { get; set; }
+
+    /// <summary>
     /// Fecha y hora de inicio de la cita.
     /// </summary>
     [Column("fecha_inicio")]
@@ -86,4 +93,7 @@ public class Appointment
 
     [ForeignKey(nameof(IdServiceType))]
     public ServiceType ServiceType { get; set; } = null!;
+
+    [ForeignKey(nameof(IdProfessional))]
+    public Professional? Professional { get; set; }
 }

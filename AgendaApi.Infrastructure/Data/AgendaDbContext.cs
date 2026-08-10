@@ -10,6 +10,8 @@ public class AgendaDbContext : DbContext
     public DbSet<Tenant> Tenants => Set<Tenant>();
     public DbSet<CalendarConnection> CalendarConnections => Set<CalendarConnection>();
     public DbSet<ServiceType> ServiceTypes => Set<ServiceType>();
+    public DbSet<Professional> Professionals => Set<Professional>();
+    public DbSet<ProfessionalService> ProfessionalServices => Set<ProfessionalService>();
     public DbSet<AvailabilityRule> AvailabilityRules => Set<AvailabilityRule>();
     public DbSet<AvailabilityException> AvailabilityExceptions => Set<AvailabilityException>();
     public DbSet<Client> Clients => Set<Client>();
@@ -39,6 +41,11 @@ public class AgendaDbContext : DbContext
             entity.HasMany(e => e.ServiceTypes)
                   .WithOne(s => s.Tenant)
                   .HasForeignKey(s => s.IdTenant)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasMany(e => e.Professionals)
+                  .WithOne(p => p.Tenant)
+                  .HasForeignKey(p => p.IdTenant)
                   .OnDelete(DeleteBehavior.Cascade);
 
             entity.HasMany(e => e.AvailabilityRules)
@@ -92,6 +99,40 @@ public class AgendaDbContext : DbContext
             entity.Property(e => e.FechaCreacion).HasDefaultValueSql("GETUTCDATE()");
         });
 
+        // --- Professional ---
+        modelBuilder.Entity<Professional>(entity =>
+        {
+            entity.ToTable("professionals");
+            entity.HasKey(e => e.IdProfessional);
+            entity.Property(e => e.Nombre).IsRequired().HasMaxLength(150);
+            entity.Property(e => e.Email).HasMaxLength(150);
+            entity.Property(e => e.Telefono).HasMaxLength(30);
+            entity.Property(e => e.Activo).HasDefaultValue(true);
+            entity.Property(e => e.FechaCreacion).HasDefaultValueSql("GETUTCDATE()");
+            entity.HasIndex(e => new { e.IdTenant, e.Nombre });
+
+            entity.HasMany(e => e.Services)
+                  .WithOne(s => s.Professional)
+                  .HasForeignKey(s => s.IdProfessional)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // --- ProfessionalService (cartera de servicios de cada profesional) ---
+        modelBuilder.Entity<ProfessionalService>(entity =>
+        {
+            entity.ToTable("professional_services");
+            entity.HasKey(e => new { e.IdProfessional, e.IdServiceType });
+            entity.Property(e => e.Activo).HasDefaultValue(true);
+
+            // Restrict (no Cascade): SQL Server 1785 se rompe con dos rutas de cascada hacia esta
+            // tabla (tenants→service_types→professional_services y tenants→professionals→professional_services).
+            // La limpieza por tenant viene por el camino de professionals (cascade desde tenant).
+            entity.HasOne(e => e.ServiceType)
+                  .WithMany()
+                  .HasForeignKey(e => e.IdServiceType)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
+
         // --- AvailabilityRule ---
         modelBuilder.Entity<AvailabilityRule>(entity =>
         {
@@ -102,6 +143,7 @@ public class AgendaDbContext : DbContext
             entity.Property(e => e.HoraFin).IsRequired();
             entity.Property(e => e.Activo).HasDefaultValue(true);
             entity.Property(e => e.FechaCreacion).HasDefaultValueSql("GETUTCDATE()");
+            entity.HasIndex(e => new { e.IdTenant, e.IdProfessional });
         });
 
         // --- AvailabilityException ---
@@ -112,7 +154,7 @@ public class AgendaDbContext : DbContext
             entity.Property(e => e.Fecha).IsRequired();
             entity.Property(e => e.Motivo).HasMaxLength(200);
             entity.Property(e => e.FechaCreacion).HasDefaultValueSql("GETUTCDATE()");
-            entity.HasIndex(e => new { e.IdTenant, e.Fecha });
+            entity.HasIndex(e => new { e.IdTenant, e.Fecha, e.IdProfessional });
         });
 
         // --- Client ---
@@ -151,7 +193,13 @@ public class AgendaDbContext : DbContext
                   .HasForeignKey(e => e.IdServiceType)
                   .OnDelete(DeleteBehavior.Restrict);
 
+            entity.HasOne(e => e.Professional)
+                  .WithMany(p => p.Appointments)
+                  .HasForeignKey(e => e.IdProfessional)
+                  .OnDelete(DeleteBehavior.Restrict);
+
             entity.HasIndex(e => new { e.IdTenant, e.FechaInicio });
+            entity.HasIndex(e => new { e.IdTenant, e.IdProfessional, e.FechaInicio });
             entity.HasIndex(e => e.ExternalEventId);
             entity.HasIndex(e => e.Estado);
         });

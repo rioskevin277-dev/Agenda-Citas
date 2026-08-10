@@ -17,6 +17,12 @@ public class AvailabilityException
     public Guid IdTenant { get; set; }
 
     /// <summary>
+    /// Profesional al que aplica la excepción. NULL = del negocio (afecta a todos).
+    /// </summary>
+    [Column("id_professional")]
+    public Guid? IdProfessional { get; set; }
+
+    /// <summary>
     /// Fecha específica de la excepción.
     /// </summary>
     [Column("fecha")]

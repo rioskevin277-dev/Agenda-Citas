@@ -44,12 +44,41 @@ public interface IServiceTypeRepository
 }
 
 /// <summary>
+/// Puerto para el repositorio de profesionales.
+/// </summary>
+public interface IProfessionalRepository
+{
+    Task<Professional?> GetByIdAsync(Guid id, CancellationToken ct = default);
+    Task<List<Professional>> GetActiveByTenantIdAsync(Guid tenantId, CancellationToken ct = default);
+
+    /// <summary>Busca un profesional activo por nombre del tenant (para el flujo AI).</summary>
+    Task<Professional?> GetActiveByTenantAndNameAsync(Guid tenantId, string nombre, CancellationToken ct = default);
+
+    Task<Professional> CreateAsync(Professional professional, CancellationToken ct = default);
+    Task UpdateAsync(Professional professional, CancellationToken ct = default);
+
+    /// <summary>¿El profesional tiene el servicio en su cartera? (ProfessionalService)</summary>
+    Task<bool> ProvidesServiceAsync(Guid professionalId, Guid serviceTypeId, CancellationToken ct = default);
+    Task<ProfessionalService> AddServiceAsync(ProfessionalService ps, CancellationToken ct = default);
+}
+
+/// <summary>
 /// Puerto para el repositorio de reglas de disponibilidad.
 /// </summary>
 public interface IAvailabilityRepository
 {
+    /// <summary>Reglas del negocio (IdProfessional == null), las que aplican a todo el mundo.</summary>
     Task<List<AvailabilityRule>> GetByTenantIdAsync(Guid tenantId, CancellationToken ct = default);
+
+    /// <summary>Reglas personales de un profesional (IdProfessional == professionalId).</summary>
+    Task<List<AvailabilityRule>> GetByTenantAndProfessionalAsync(Guid tenantId, Guid professionalId, CancellationToken ct = default);
+
+    /// <summary>Excepciones del negocio (IdProfessional == null).</summary>
     Task<List<AvailabilityException>> GetExceptionsByDateRangeAsync(Guid tenantId, DateTime from, DateTime to, CancellationToken ct = default);
+
+    /// <summary>Excepciones personales de un profesional (IdProfessional == professionalId).</summary>
+    Task<List<AvailabilityException>> GetExceptionsByDateRangeForProfessionalAsync(Guid tenantId, DateTime from, DateTime to, Guid professionalId, CancellationToken ct = default);
+
     Task<AvailabilityRule> CreateRuleAsync(AvailabilityRule rule, CancellationToken ct = default);
     Task<AvailabilityException> CreateExceptionAsync(AvailabilityException exception, CancellationToken ct = default);
     Task DeleteRuleAsync(Guid id, CancellationToken ct = default);
@@ -65,6 +94,13 @@ public interface IAppointmentRepository
     Task<List<Appointment>> GetByTenantIdAsync(Guid tenantId, DateTime? from = null, DateTime? to = null, CancellationToken ct = default);
     Task<List<Appointment>> GetByClientIdAsync(Guid clientId, CancellationToken ct = default);
     Task<List<Appointment>> GetByDateRangeAsync(Guid tenantId, DateTime from, DateTime to, CancellationToken ct = default);
+
+    /// <summary>
+    /// Citas que ocupan el canal de un profesional: sus propias citas (IdProfessional == professionalId)
+    /// más las citas legadas sin profesional (IdProfessional == null), que por compatibilidad
+    /// bloquean a cualquiera.
+    /// </summary>
+    Task<List<Appointment>> GetByDateRangeForProfessionalAsync(Guid tenantId, DateTime from, DateTime to, Guid professionalId, CancellationToken ct = default);
     Task<Appointment> CreateAsync(Appointment appointment, CancellationToken ct = default);
     Task UpdateAsync(Appointment appointment, CancellationToken ct = default);
     Task<List<Appointment>> GetPendingRemindersAsync(CancellationToken ct = default);

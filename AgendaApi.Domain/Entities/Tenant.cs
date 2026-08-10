@@ -75,6 +75,7 @@ public class Tenant
     // Navigation properties
     public CalendarConnection? CalendarConnection { get; set; }
     public ICollection<ServiceType> ServiceTypes { get; set; } = new List<ServiceType>();
+    public ICollection<Professional> Professionals { get; set; } = new List<Professional>();
     public ICollection<AvailabilityRule> AvailabilityRules { get; set; } = new List<AvailabilityRule>();
     public ICollection<Client> Clients { get; set; } = new List<Client>();
     public ICollection<Appointment> Appointments { get; set; } = new List<Appointment>();
