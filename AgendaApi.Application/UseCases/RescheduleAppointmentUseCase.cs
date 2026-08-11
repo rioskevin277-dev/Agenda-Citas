@@ -1,6 +1,5 @@
 using AgendaApi.Application.DTOs;
 using AgendaApi.Domain.Ports;
-using Microsoft.Extensions.Logging;
 
 namespace AgendaApi.Application.UseCases;
 
@@ -15,9 +14,7 @@ public class RescheduleAppointmentUseCase
     private readonly ICalendarConnectionRepository _connectionRepo;
     private readonly ICalendarProviderFactory _providerFactory;
     private readonly IClientRepository _clientRepo;
-    private readonly IMessagingProvider _messagingProvider;
     private readonly IUnitOfWork _unitOfWork;
-    private readonly ILogger<RescheduleAppointmentUseCase> _logger;
     private readonly IBookingPolicy _bookingPolicy;
 
     public RescheduleAppointmentUseCase(
@@ -26,9 +23,7 @@ public class RescheduleAppointmentUseCase
         ICalendarConnectionRepository connectionRepo,
         ICalendarProviderFactory providerFactory,
         IClientRepository clientRepo,
-        IMessagingProvider messagingProvider,
         IUnitOfWork unitOfWork,
-        ILogger<RescheduleAppointmentUseCase> logger,
         IBookingPolicy bookingPolicy)
     {
         _appointmentRepo = appointmentRepo;
@@ -36,15 +31,16 @@ public class RescheduleAppointmentUseCase
         _connectionRepo = connectionRepo;
         _providerFactory = providerFactory;
         _clientRepo = clientRepo;
-        _messagingProvider = messagingProvider;
         _unitOfWork = unitOfWork;
-        _logger = logger;
         _bookingPolicy = bookingPolicy;
     }
 
     public async Task<AppointmentResponseDto?> ExecuteAsync(AppointmentRescheduleDto dto, CancellationToken ct = default)
     {
         Domain.Entities.Appointment? appointment = null;
+        // True cuando la cita se resolvió por WhatsApp (flujo del cliente). Decide si la
+        // reprogramación debe volver a PENDIENTE para que el cliente re-confirme (E3).
+        var resolvedByWhatsApp = false;
 
         if (dto.AppointmentId != Guid.Empty)
         {
@@ -54,13 +50,25 @@ public class RescheduleAppointmentUseCase
         {
             // El modelo no siempre tiene el ID real de la cita (tiende a inventar IDs).
             // Por ello se permite identificar la cita por el WhatsApp del cliente,
-            // reprogrando la próxima cita pendiente/confirmada.
+            // reprogramando la próxima cita pendiente/confirmada FUTURA.
             var client = await _clientRepo.GetByWhatsAppAsync(dto.AppointmentIdentifier, dto.TenantId, ct);
             if (client != null)
             {
+                resolvedByWhatsApp = true;
                 var clientAppointments = await _appointmentRepo.GetByClientIdAsync(client.IdClient, ct);
+
+                // "Ahora" del negocio en hora local marcada como UTC (misma convención que
+                // AppointmentRepository). Sin este filtro, REAGENDAR pega en la cita más
+                // antigua aunque ya haya pasado y deja la real sin reprogramar.
+                var businessNow = TimeZoneInfo.ConvertTimeFromUtc(
+                    DateTime.UtcNow,
+                    TimeZoneInfo.FindSystemTimeZoneById(
+                        Environment.GetEnvironmentVariable("Calendar__TimeZone") ?? "America/Bogota"));
+                var now = DateTime.SpecifyKind(businessNow, DateTimeKind.Utc);
+
                 appointment = clientAppointments
-                    .Where(a => a.Estado == "pending" || a.Estado == "confirmed")
+                    .Where(a => a.FechaInicio >= now
+                                && (a.Estado == "pending" || a.Estado == "confirmed"))
                     .OrderBy(a => a.FechaInicio)
                     .FirstOrDefault();
             }
@@ -74,6 +82,9 @@ public class RescheduleAppointmentUseCase
             throw new InvalidOperationException("Cita no encontrada");
         if (appointment.Estado == "cancelled")
             throw new InvalidOperationException("No se puede reprogramar una cita cancelada");
+
+        if (appointment.Estado is "completed" or "no_show")
+            throw new InvalidOperationException("No se puede reprogramar una cita ya finalizada");
 
         // Resolver el tipo de servicio para restricciones (capacidad) y el fin de la cita
         var serviceType = await _serviceTypeRepo.GetByIdAsync(appointment.IdServiceType, ct);
@@ -118,26 +129,23 @@ public class RescheduleAppointmentUseCase
         appointment.FechaInicio = dto.NuevaFechaInicio;
         appointment.FechaFin = nuevaFechaFin;
         appointment.FechaActualizacion = DateTime.UtcNow;
+
+        // P0/E3: si el CLIENTE (resolución por WhatsApp) reprogramó una cita que estaba
+        // confirmada, vuelve a PENDIENTE y limpia ConfirmadoEn: debe re-confirmar con
+        // CONFIRMAR. La API/owner reprograma por AppointmentId y mantiene el estado
+        // confirmado (no requiere re-confirmación del cliente).
+        if (resolvedByWhatsApp && appointment.Estado == "confirmed")
+        {
+            appointment.Estado = "pending";
+            appointment.ConfirmadoEn = null;
+        }
+
         await _appointmentRepo.UpdateAsync(appointment, ct);
         await _unitOfWork.SaveChangesAsync(ct);
 
-        // Notify
-        try
-        {
-            var client = await _clientRepo.GetByIdAsync(appointment.IdClient, ct);
-            if (client != null)
-            {
-                var fechaStr = appointment.FechaInicio.ToString("dd/MM/yyyy 'a las' HH:mm");
-                await _messagingProvider.SendTextAsync(
-                    client.WhatsApp,
-                    $"🔄 Tu cita ha sido reprogramada para el {fechaStr}.",
-                    ct);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "[RescheduleAppointment] No se pudo notificar al cliente por WhatsApp: {Message}", ex.Message);
-        }
+        // No se notifica por WhatsApp aquí: la confirmación al cliente la entrega la
+        // respuesta del asistente (un único mensaje). El adaptador requiere el token/phone
+        // del tenant, que solo está completo en el flujo del webhook; en la API no aplica.
 
         return new AppointmentResponseDto
         {

@@ -73,6 +73,9 @@ public class ConfirmAppointmentUseCase
         if (appointment.Estado == "cancelled")
             throw new InvalidOperationException("La cita está cancelada y no se puede confirmar");
 
+        if (appointment.Estado is "completed" or "no_show")
+            throw new InvalidOperationException("La cita ya finalizó y no se puede confirmar");
+
         if (appointment.Estado != "confirmed")
         {
             appointment.Estado = "confirmed";

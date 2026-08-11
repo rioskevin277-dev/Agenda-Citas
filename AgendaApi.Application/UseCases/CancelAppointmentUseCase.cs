@@ -1,6 +1,5 @@
 using AgendaApi.Application.DTOs;
 using AgendaApi.Domain.Ports;
-using Microsoft.Extensions.Logging;
 
 namespace AgendaApi.Application.UseCases;
 
@@ -14,26 +13,20 @@ public class CancelAppointmentUseCase
     private readonly ICalendarConnectionRepository _connectionRepo;
     private readonly ICalendarProviderFactory _providerFactory;
     private readonly IClientRepository _clientRepo;
-    private readonly IMessagingProvider _messagingProvider;
     private readonly IUnitOfWork _unitOfWork;
-    private readonly ILogger<CancelAppointmentUseCase> _logger;
 
     public CancelAppointmentUseCase(
         IAppointmentRepository appointmentRepo,
         ICalendarConnectionRepository connectionRepo,
         ICalendarProviderFactory providerFactory,
         IClientRepository clientRepo,
-        IMessagingProvider messagingProvider,
-        IUnitOfWork unitOfWork,
-        ILogger<CancelAppointmentUseCase> logger)
+        IUnitOfWork unitOfWork)
     {
         _appointmentRepo = appointmentRepo;
         _connectionRepo = connectionRepo;
         _providerFactory = providerFactory;
         _clientRepo = clientRepo;
-        _messagingProvider = messagingProvider;
         _unitOfWork = unitOfWork;
-        _logger = logger;
     }
 
     public async Task<AppointmentResponseDto?> ExecuteAsync(AppointmentCancelDto dto, CancellationToken ct = default)
@@ -52,9 +45,20 @@ public class CancelAppointmentUseCase
             if (client != null)
             {
                 var clientAppointments = await _appointmentRepo.GetByClientIdAsync(client.IdClient, ct);
-                // Get the next upcoming appointment
+
+                // "Ahora" del negocio en hora local marcada como UTC (misma convención que
+                // AppointmentRepository). Sin este filtro, CANCELAR pega en la cita más antigua
+                // aunque ya haya pasado (las confirmadas viejas se acumulan) y deja la real sin cancelar.
+                var businessNow = TimeZoneInfo.ConvertTimeFromUtc(
+                    DateTime.UtcNow,
+                    TimeZoneInfo.FindSystemTimeZoneById(
+                        Environment.GetEnvironmentVariable("Calendar__TimeZone") ?? "America/Bogota"));
+                var now = DateTime.SpecifyKind(businessNow, DateTimeKind.Utc);
+
+                // Get the next upcoming (future) appointment
                 appointment = clientAppointments
-                    .Where(a => a.Estado == "pending" || a.Estado == "confirmed")
+                    .Where(a => a.FechaInicio >= now
+                                && (a.Estado == "pending" || a.Estado == "confirmed"))
                     .OrderBy(a => a.FechaInicio)
                     .FirstOrDefault();
             }
@@ -71,6 +75,9 @@ public class CancelAppointmentUseCase
 
         if (appointment.Estado == "cancelled")
             throw new InvalidOperationException("La cita ya está cancelada");
+
+        if (appointment.Estado is "completed" or "no_show")
+            throw new InvalidOperationException("La cita ya finalizó y no se puede cancelar");
 
         // Cancel in external calendar
         if (!string.IsNullOrEmpty(appointment.ExternalEventId))
@@ -96,22 +103,9 @@ public class CancelAppointmentUseCase
         await _appointmentRepo.UpdateAsync(appointment, ct);
         await _unitOfWork.SaveChangesAsync(ct);
 
-        // Notify client
-        try
-        {
-            var client = await _clientRepo.GetByIdAsync(appointment.IdClient, ct);
-            if (client != null)
-            {
-                await _messagingProvider.SendTextAsync(
-                    client.WhatsApp,
-                    "❌ Tu cita ha sido cancelada correctamente. Si necesitas reagendar, escríbenos.",
-                    ct);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "[CancelAppointment] No se pudo notificar al cliente por WhatsApp: {Message}", ex.Message);
-        }
+        // No se notifica por WhatsApp aquí: la confirmación al cliente la entrega la
+        // respuesta del asistente (un único mensaje). El adaptador requiere el token/phone
+        // del tenant, que solo está completo en el flujo del webhook; en la API no aplica.
 
         return new AppointmentResponseDto
         {

@@ -197,4 +197,30 @@ public class ConfirmAppointmentUseCaseTests
         await act.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("Cita no encontrada");
     }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenCompleted_ThrowsInvalidOperation()
+    {
+        // Arrange
+        var appointment = new Appointment
+        {
+            IdAppointment = Guid.NewGuid(),
+            IdTenant = Guid.NewGuid(),
+            Estado = "completed",
+            FechaInicio = DateTime.UtcNow.AddDays(-1),
+            FechaFin = DateTime.UtcNow.AddDays(-1).AddHours(1)
+        };
+
+        _appointmentRepo.Setup(r => r.GetByIdAsync(appointment.IdAppointment, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(appointment);
+
+        var dto = new AppointmentCancelDto { AppointmentId = appointment.IdAppointment };
+
+        // Act
+        var act = async () => await _useCase.ExecuteAsync(dto);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("La cita ya finalizó y no se puede confirmar");
+    }
 }
