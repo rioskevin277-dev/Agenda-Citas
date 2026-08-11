@@ -16,6 +16,7 @@ public class AgendaDbContext : DbContext
     public DbSet<AvailabilityException> AvailabilityExceptions => Set<AvailabilityException>();
     public DbSet<Client> Clients => Set<Client>();
     public DbSet<Appointment> Appointments => Set<Appointment>();
+    public DbSet<ReminderLog> ReminderLogs => Set<ReminderLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -34,6 +35,9 @@ public class AgendaDbContext : DbContext
             entity.Property(e => e.AntelacionMinimaHoras).HasDefaultValue(0);
             entity.Property(e => e.AntelacionMaximaDias).HasDefaultValue(0);
             entity.Property(e => e.CalendarProvider).IsRequired().HasMaxLength(20).HasDefaultValue("google");
+            entity.Property(e => e.RecordatorioHabilitado).HasDefaultValue(true);
+            entity.Property(e => e.Recordatorio1Horas).HasDefaultValue(24);
+            entity.Property(e => e.Recordatorio2Horas).HasDefaultValue(2);
             entity.Property(e => e.Activo).HasDefaultValue(true);
             entity.Property(e => e.FechaCreacion).HasDefaultValueSql("GETUTCDATE()");
             entity.Property(e => e.FechaActualizacion).HasDefaultValueSql("GETUTCDATE()");
@@ -202,6 +206,27 @@ public class AgendaDbContext : DbContext
             entity.HasIndex(e => new { e.IdTenant, e.IdProfessional, e.FechaInicio });
             entity.HasIndex(e => e.ExternalEventId);
             entity.HasIndex(e => e.Estado);
+        });
+
+        // --- ReminderLog ---
+        modelBuilder.Entity<ReminderLog>(entity =>
+        {
+            entity.ToTable("reminder_logs");
+            entity.HasKey(e => e.IdReminderLog);
+            entity.Property(e => e.Estado).IsRequired().HasMaxLength(20).HasDefaultValue("sent");
+            entity.Property(e => e.WamId).HasMaxLength(100);
+            entity.Property(e => e.Error).HasMaxLength(500);
+            entity.Property(e => e.Reintentos).HasDefaultValue(0);
+            entity.Property(e => e.FechaCreacion).HasDefaultValueSql("GETUTCDATE()");
+
+            entity.HasOne(e => e.Appointment)
+                  .WithMany()
+                  .HasForeignKey(e => e.IdAppointment)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasIndex(e => new { e.IdAppointment, e.Etapa });
+            entity.HasIndex(e => e.WamId);
+            entity.HasIndex(e => e.IdTenant);
         });
     }
 }

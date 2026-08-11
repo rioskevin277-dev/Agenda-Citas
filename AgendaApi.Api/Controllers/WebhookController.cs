@@ -58,7 +58,7 @@ public class WebhookController : ControllerBase
         {
             _logger.LogInformation("[Webhook] Recibido payload de WhatsApp");
 
-            LogDeliveryStatus(body);
+            await LogDeliveryStatusAsync(body);
 
             var messages = await _messagingProvider.ParseWebhookPayloadAsync(body);
 
@@ -98,9 +98,10 @@ public class WebhookController : ControllerBase
 
     /// <summary>
     /// Registra los callbacks de estado de entrega de Meta (sent/delivered/failed).
-    /// Solo loguea el estado y código de error, nunca el contenido del mensaje.
+    /// Loguea el estado y código de error (nunca el contenido), y si el wamid corresponde a
+    /// un recordatorio (reminder_logs), actualiza su estado de entrega (delivered/failed+retry).
     /// </summary>
-    private void LogDeliveryStatus(object body)
+    private async Task LogDeliveryStatusAsync(object body)
     {
         try
         {
@@ -134,6 +135,15 @@ public class WebhookController : ControllerBase
                         }
                         _logger.LogInformation("[Webhook] Entrega Msg: status={Status} recip={Recipient} {Detail}",
                             stStatus, recipient, detail);
+
+                        // El wamid de un status llega en el campo "id" del objeto statuses
+                        // (id = "wamid.HBg..."). Algunas versiones lo envían también como "wamid"
+                        // explícito; se lee "id" con fallback a "wamid".
+                        var wamId = st.TryGetProperty("id", out var idProp) && !string.IsNullOrWhiteSpace(idProp.GetString())
+                            ? idProp.GetString()
+                            : st.TryGetProperty("wamid", out var wamProp) ? wamProp.GetString() : null;
+                        if (!string.IsNullOrEmpty(wamId) && stStatus is "delivered" or "read" or "failed")
+                            await UpdateReminderLogDeliveryAsync(wamId, stStatus, detail);
                     }
                 }
             }
@@ -141,6 +151,42 @@ public class WebhookController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "[Webhook] No fue un payload de estado");
+        }
+    }
+
+    /// <summary>
+    /// Correlaciona el wamid del callback de entrega con un recordatorio y actualiza su estado.
+    /// No-op si el mensaje no es un recordatorio (no hay fila con ese wamid).
+    /// </summary>
+    private async Task UpdateReminderLogDeliveryAsync(string wamId, string status, string detail)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var reminderRepo = scope.ServiceProvider.GetRequiredService<IReminderLogRepository>();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+            var log = await reminderRepo.GetByWamIdAsync(wamId);
+            if (log == null)
+                return; // no es un recordatorio (mensaje de conversación normal)
+
+            if (status is "delivered" or "read")
+            {
+                log.Estado = "delivered";
+                log.Error = null;
+            }
+            else if (status == "failed")
+            {
+                log.Estado = "failed";
+                log.Reintentos++;
+                log.Error = detail;
+            }
+            await reminderRepo.UpdateAsync(log);
+            await unitOfWork.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Webhook] No se pudo actualizar estado de entrega del recordatorio {WamId}", wamId);
         }
     }
 

@@ -10,7 +10,7 @@ namespace AgendaApi.Infrastructure.Services;
 /// entre mensajes de WhatsApp, que por diseño llegan como peticiones independientes.
 /// Incluye expiración (24h) y tope de mensajes retenidos.
 /// </summary>
-public class ConversationMemoryService
+public class ConversationMemoryService : IConversationSessionService
 {
     private readonly ConcurrentDictionary<string, List<ChatMessage>> _store = new();
     private readonly ConcurrentDictionary<string, DateTime> _lastActivity = new();
@@ -84,4 +84,14 @@ public class ConversationMemoryService
 
     private static List<ChatMessage> FreshHistory(string systemPrompt)
         => new() { new() { Role = "system", Content = systemPrompt } };
+
+    /// <summary>
+    /// ¿El cliente tiene una sesión de WhatsApp activa (actividad en las últimas 24h)?
+    /// Determina si un mensaje de texto libre puede enviarse o se necesita un template aprobado.
+    /// </summary>
+    public bool HasActiveSession(Guid tenantId, string userPhone)
+    {
+        var key = GetKey(tenantId, userPhone);
+        return _lastActivity.TryGetValue(key, out var last) && DateTime.UtcNow - last <= Expiry;
+    }
 }

@@ -60,7 +60,7 @@ public class CreateAppointmentUseCaseTests
         _connectionRepo.Setup(r => r.GetByTenantIdAsync(tenantId, It.IsAny<CancellationToken>()))
             .ReturnsAsync((CalendarConnection?)null);
         _messagingProvider.Setup(m => m.SendTextAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
+            .ReturnsAsync((string?)null);
 
         var dto = new AppointmentCreateDto
         {
@@ -99,7 +99,7 @@ public class CreateAppointmentUseCaseTests
         _connectionRepo.Setup(r => r.GetByTenantIdAsync(tenantId, It.IsAny<CancellationToken>()))
             .ReturnsAsync((CalendarConnection?)null);
         _messagingProvider.Setup(m => m.SendTextAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
+            .ReturnsAsync((string?)null);
 
         var dto = new AppointmentCreateDto
         {
@@ -146,7 +146,7 @@ public class CreateAppointmentUseCaseTests
         _connectionRepo.Setup(r => r.GetByTenantIdAsync(tenantId, It.IsAny<CancellationToken>()))
             .ReturnsAsync((CalendarConnection?)null);
         _messagingProvider.Setup(m => m.SendTextAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
+            .ReturnsAsync((string?)null);
 
         var dto = new AppointmentCreateDto
         {
@@ -192,7 +192,7 @@ public class CreateAppointmentUseCaseTests
         _connectionRepo.Setup(r => r.GetByTenantIdAsync(tenantId, It.IsAny<CancellationToken>()))
             .ReturnsAsync((CalendarConnection?)null);
         _messagingProvider.Setup(m => m.SendTextAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
+            .ReturnsAsync((string?)null);
 
         var dto = new AppointmentCreateDto
         {
@@ -277,7 +277,7 @@ public class CreateAppointmentUseCaseTests
         _connectionRepo.Setup(r => r.GetByTenantIdAsync(tenantId, It.IsAny<CancellationToken>()))
             .ReturnsAsync((CalendarConnection?)null);
         _messagingProvider.Setup(m => m.SendTextAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
+            .ReturnsAsync((string?)null);
 
         var dto = new AppointmentCreateDto
         {
@@ -316,7 +316,7 @@ public class CreateAppointmentUseCaseTests
         _connectionRepo.Setup(r => r.GetByTenantIdAsync(tenantId, It.IsAny<CancellationToken>()))
             .ReturnsAsync((CalendarConnection?)null);
         _messagingProvider.Setup(m => m.SendTextAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
+            .ReturnsAsync((string?)null);
 
         var dto = new AppointmentCreateDto
         {

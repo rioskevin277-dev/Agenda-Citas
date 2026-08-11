@@ -63,6 +63,25 @@ public class Tenant
     [StringLength(20)]
     public string CalendarProvider { get; set; } = "google";
 
+    /// <summary>
+    /// Activa los recordatorios automáticos para este tenant (default: sí).
+    /// </summary>
+    [Column("recordatorio_habilitado")]
+    public bool RecordatorioHabilitado { get; set; } = true;
+
+    /// <summary>
+    /// Antelación de la 1ª etapa de recordatorio en horas (default 24). 0 = sin 1ª etapa.
+    /// </summary>
+    [Column("recordatorio_1_horas")]
+    public int Recordatorio1Horas { get; set; } = 24;
+
+    /// <summary>
+    /// Antelación de la 2ª etapa de recordatorio en horas (default 2). 0 = sin 2ª etapa.
+    /// La 2ª etapa solo se envía a citas aún no confirmadas.
+    /// </summary>
+    [Column("recordatorio_2_horas")]
+    public int Recordatorio2Horas { get; set; } = 2;
+
     [Column("activo")]
     public bool Activo { get; set; } = true;
 

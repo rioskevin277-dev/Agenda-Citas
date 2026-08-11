@@ -52,6 +52,8 @@ services:
       - PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
       - Calendar__TimeZone=${Calendar__TimeZone}
       - Notificaciones__WhatsAppDueno=${NOTIFICACIONES_WHATSAPP_DUENO}
+      - WhatsApp__RecordatorioTemplate24h=${WHATSAPP_RECORDATORIO_TEMPLATE_24H}
+      - WhatsApp__RecordatorioTemplate2h=${WHATSAPP_RECORDATORIO_TEMPLATE_2H}
       - ASPNETCORE_URLS=http://+:8080
       - ASPNETCORE_ENVIRONMENT=Production
     networks:

@@ -103,7 +103,11 @@ public interface IAppointmentRepository
     Task<List<Appointment>> GetByDateRangeForProfessionalAsync(Guid tenantId, DateTime from, DateTime to, Guid professionalId, CancellationToken ct = default);
     Task<Appointment> CreateAsync(Appointment appointment, CancellationToken ct = default);
     Task UpdateAsync(Appointment appointment, CancellationToken ct = default);
-    Task<List<Appointment>> GetPendingRemindersAsync(CancellationToken ct = default);
+    /// <summary>
+    /// Citas pendientes/confirmadas futuras (FechaInicio > now) candidatas a recordatorio.
+    /// La ventana de cada etapa se calcula por tenant en el use case (multi-etapa 24h/2h).
+    /// </summary>
+    Task<List<Appointment>> GetReminderCandidatesAsync(DateTime now, CancellationToken ct = default);
     Task<Appointment?> GetByExternalEventIdAsync(string externalEventId, CancellationToken ct = default);
 
     /// <summary>Citas futuras no canceladas sin evento externo (ExternalEventId == null),
@@ -120,4 +124,15 @@ public interface IClientRepository
     Task<Client?> GetByIdAsync(Guid id, CancellationToken ct = default);
     Task<Client> CreateAsync(Client client, CancellationToken ct = default);
     Task UpdateAsync(Client client, CancellationToken ct = default);
+}
+
+/// <summary>
+/// Puerto para el registro de recordatorios por cita y etapa (dedup + estados + reintentos).
+/// </summary>
+public interface IReminderLogRepository
+{
+    Task<List<ReminderLog>> GetByAppointmentIdsAsync(IEnumerable<Guid> appointmentIds, CancellationToken ct = default);
+    Task<ReminderLog?> GetByWamIdAsync(string wamId, CancellationToken ct = default);
+    Task AddAsync(ReminderLog log, CancellationToken ct = default);
+    Task UpdateAsync(ReminderLog log, CancellationToken ct = default);
 }

@@ -38,6 +38,7 @@ public static class DependencyInjection
         services.AddScoped<IServiceTypeRepository, ServiceTypeRepository>();
         services.AddScoped<IProfessionalRepository, ProfessionalRepository>();
         services.AddScoped<IAvailabilityRepository, AvailabilityRepository>();
+        services.AddScoped<IReminderLogRepository, ReminderLogRepository>();
 
         // Tenant Context (scoped)
         services.AddScoped<ITenantContext, TenantContext>();
@@ -105,8 +106,9 @@ public static class DependencyInjection
         services.AddSingleton<MessageBufferService>();
         services.AddHostedService<MessageBufferService>(sp => sp.GetRequiredService<MessageBufferService>());
 
-        // Memoria de conversación (contexto entre mensajes)
+        // Memoria de conversación (contexto entre mensajes + sesión activa de WhatsApp)
         services.AddSingleton<ConversationMemoryService>();
+        services.AddSingleton<IConversationSessionService>(sp => sp.GetRequiredService<ConversationMemoryService>());
 
         // Estado estructurado por conversación (reserva en curso + escalado a humano)
         services.AddSingleton<ConversationStateService>();

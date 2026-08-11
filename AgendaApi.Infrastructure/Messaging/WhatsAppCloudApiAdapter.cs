@@ -26,7 +26,7 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
         _logger = logger;
     }
 
-    public async Task SendTextAsync(string to, string message, CancellationToken ct = default)
+    public async Task<string?> SendTextAsync(string to, string message, CancellationToken ct = default)
     {
         if (!_tenantContext.IsSet)
             throw new InvalidOperationException("TenantContext no está configurado");
@@ -59,9 +59,11 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
 
         if (!response.IsSuccessStatusCode)
             throw new HttpRequestException($"Error WhatsApp: {response.StatusCode} - {responseBody}");
+
+        return ExtractWamId(responseBody);
     }
 
-    public async Task SendTemplateAsync(string to, string templateName, Dictionary<string, string> parameters, CancellationToken ct = default)
+    public async Task<string?> SendTemplateAsync(string to, string templateName, Dictionary<string, string> parameters, CancellationToken ct = default)
     {
         if (!_tenantContext.IsSet)
             throw new InvalidOperationException("TenantContext no está configurado");
@@ -71,14 +73,12 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
 
         var url = $"https://graph.facebook.com/v18.0/{phoneNumberId}/messages";
 
-        var components = parameters.Select((kvp, i) => new
-        {
-            type = "body",
-            parameters = new[]
-            {
-                new { type = "text", text = kvp.Value }
-            }
-        }).ToArray();
+        // El body de un template recibe los parámetros en UN componente de tipo "body",
+        // como un array de parámetros en orden ({{1}}, {{2}}, ...). Antes se generaba un
+        // componente por parámetro, que Meta rechaza con >1 body param.
+        var bodyParameters = parameters.Values
+            .Select(value => (object)new { type = "text", text = value })
+            .ToArray();
 
         var payload = new
         {
@@ -90,7 +90,10 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
             {
                 name = templateName,
                 language = new { code = "es" },
-                components = components
+                components = new[]
+                {
+                    new { type = "body", parameters = bodyParameters }
+                }
             }
         };
 
@@ -105,6 +108,32 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
 
         if (!response.IsSuccessStatusCode)
             throw new HttpRequestException($"Error WhatsApp template: {response.StatusCode} - {responseBody}");
+
+        return ExtractWamId(responseBody);
+    }
+
+    /// <summary>
+    /// Extrae el ID del mensaje (wamid) de la respuesta de Meta: {"messages":[{"id":"..."}]}.
+    /// Devuelve null si el payload no lo trae (no debe lanzar).
+    /// </summary>
+    private static string? ExtractWamId(string responseBody)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(responseBody);
+            if (doc.RootElement.TryGetProperty("messages", out var messages)
+                && messages.ValueKind == JsonValueKind.Array
+                && messages.GetArrayLength() > 0
+                && messages[0].TryGetProperty("id", out var id))
+            {
+                return id.GetString();
+            }
+        }
+        catch (JsonException)
+        {
+            // Payload inesperado: no bloquea el envío, solo no hay wamid para correlacionar.
+        }
+        return null;
     }
 
     public Task<string?> VerifyWebhookAsync(string mode, string token, string challenge)

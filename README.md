@@ -65,20 +65,39 @@ Recuerda el contexto de cada cliente durante **24 horas** (saludo, servicios que
 
 ---
 
-## ⏰ Recordatorios (con confirmar / cancelar / reagendar)
+## ⏰ Recordatorios automáticos (multi-etapa, por negocio)
 
-Un servicio en segundo plano (`ReminderBackgroundService`) envía un recordatorio **~4 horas antes** de cada cita pendiente o confirmada:
+Un servicio en segundo plano (`ReminderBackgroundService`, ciclo de 5 min) envía recordatorios
+por WhatsApp según la configuración **de cada negocio (tenant)**:
+
+- `recordatorio_habilitado` — activa/desactiva los recordatorios (default `true`).
+- `recordatorio_1_horas` — antelación de la 1ª etapa en horas (default **24**). `0` = sin etapa.
+- `recordatorio_2_horas` — antelación de la 2ª etapa en horas (default **2**). `0` = sin etapa.
+
+Ejemplo: **Tenant A** 24h + 2h → aviso "tienes una cita mañana…" (pedir confirmar) y, si aún no
+confirma, un nudge final 2h antes. **Tenant B** puede usar solo 48h.
 
 ```
-⏰ Recordatorio: Tienes una cita agendada para el 07/08/2026 a las 14:00.
-Responde CONFIRMAR para confirmar, CANCELAR para cancelarla o REAGENDAR para cambiar la fecha.
+⏰ Recordatorio: tienes una cita PENDIENTE de confirmación para el 07/08/2026 a las 14:00.
+Responde CONFIRMAR para confirmarla, CANCELAR para cancelarla o REAGENDAR para cambiar la fecha.
 ```
 
 - **CONFIRMAR** → marca la cita como `confirmed` (`confirm_appointment`).
 - **CANCELAR** → la cancela y acaba el turno (no se reintenta).
 - **REAGENDAR** → el bot pregunta la nueva fecha, verifica disponibilidad y la mueve.
 
-El recordatorio se envía **una sola vez** por cita (`recordatorio_enviado_en`).
+La **2ª etapa solo se envía a citas aún no confirmadas**. Al reagendar no hay que hacer nada:
+las ventanas de recordatorio se recalculan solas contra la nueva fecha, y una etapa ya enviada
+no se repite.
+
+**Entrega y reintentos:** cada intento se registra en `reminder_logs` (cita, etapa, estado
+`sent`/`delivered`/`failed`, reintentos, wamid). Los fallos se reintentan hasta 3 veces; el
+callback de estado de Meta actualiza la entrega (`delivered`/`failed`).
+
+**Templates:** fuera de la ventana de sesión de 24h, WhatsApp rechaza el texto libre (131047).
+Para enviar en cualquier momento, se usan **templates aprobados** configurados por env
+(`WhatsApp__RecordatorioTemplate24h` / `WhatsApp__RecordatorioTemplate2h`). Si no hay template,
+se envía texto libre solo dentro de la ventana de sesión.
 
 ---
 
