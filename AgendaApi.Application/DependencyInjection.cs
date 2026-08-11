@@ -23,10 +23,12 @@ public static class DependencyInjection
         services.AddScoped<SendRemindersUseCase>();
         services.AddScoped<ListAppointmentsUseCase>();
         services.AddScoped<RenewCalendarSubscriptionsUseCase>();
+        services.AddScoped<RepairExternalCalendarSyncUseCase>();
 
         // Background services
         services.AddHostedService<ReminderBackgroundService>();
         services.AddHostedService<SubscriptionRenewalService>();
+        services.AddHostedService<ExternalSyncRepairBackgroundService>();
 
         return services;
     }

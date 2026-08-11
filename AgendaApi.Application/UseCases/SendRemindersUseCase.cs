@@ -68,12 +68,12 @@ public class SendRemindersUseCase
                     phoneNumberId: tenant.WhatsAppPhoneNumberId ?? "");
 
                 var fechaStr = appointment.FechaInicio.ToString("dd/MM/yyyy 'a las' HH:mm");
-                await _messagingProvider.SendTextAsync(
-                    client.WhatsApp,
-                    $"⏰ Recordatorio: Tienes una cita agendada para el {fechaStr}.\n" +
-                    $"Responde CONFIRMAR para confirmar, CANCELAR para cancelarla o " +
-                    $"REAGENDAR para cambiar la fecha.",
-                    ct);
+                var mensaje = appointment.Estado == "confirmed"
+                    ? $"⏰ Recordatorio: tienes una cita confirmada para el {fechaStr}.\n" +
+                      $"Si necesitas cambiarla responde REAGENDAR, o CANCELAR para cancelarla."
+                    : $"⏰ Recordatorio: tienes una cita PENDIENTE de confirmación para el {fechaStr}.\n" +
+                      $"Responde CONFIRMAR para confirmarla, CANCELAR para cancelarla o REAGENDAR para cambiar la fecha.";
+                await _messagingProvider.SendTextAsync(client.WhatsApp, mensaje, ct);
 
                 appointment.RecordatorioEnviadoEn = DateTime.UtcNow;
                 await _appointmentRepo.UpdateAsync(appointment, ct);

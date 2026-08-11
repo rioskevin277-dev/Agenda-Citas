@@ -105,6 +105,10 @@ public interface IAppointmentRepository
     Task UpdateAsync(Appointment appointment, CancellationToken ct = default);
     Task<List<Appointment>> GetPendingRemindersAsync(CancellationToken ct = default);
     Task<Appointment?> GetByExternalEventIdAsync(string externalEventId, CancellationToken ct = default);
+
+    /// <summary>Citas futuras no canceladas sin evento externo (ExternalEventId == null),
+    /// para que el job de reparación lo recreé en el calendario.</summary>
+    Task<List<Appointment>> GetMissingExternalEventsAsync(CancellationToken ct = default);
 }
 
 /// <summary>

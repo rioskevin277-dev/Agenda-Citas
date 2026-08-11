@@ -145,7 +145,7 @@ public class CreateAppointmentUseCase
             IdProfessional = professional?.IdProfessional,
             FechaInicio = dto.FechaInicio,
             FechaFin = fechaFin,
-            Estado = "confirmed",
+            Estado = dto.ConfirmarAlCrear ? "confirmed" : "pending",
             Notas = dto.Notas,
             FechaCreacion = DateTime.UtcNow,
             FechaActualizacion = DateTime.UtcNow
@@ -178,10 +178,10 @@ public class CreateAppointmentUseCase
         {
             var fechaStr = appointment.FechaInicio.ToString("dd/MM/yyyy 'a las' HH:mm");
             var profStr = professional != null ? $"\n👤 Con: {professional.Nombre}" : "";
-            await _messagingProvider.SendTextAsync(
-                client.WhatsApp,
-                $"✅ Cita confirmada: {serviceType.Nombre}{profStr}\n📅 {fechaStr}\nGracias por agendar. Si necesitas cambiar o cancelar, avísame.",
-                ct);
+            var mensaje = appointment.Estado == "confirmed"
+                ? $"✅ Cita confirmada: {serviceType.Nombre}{profStr}\n📅 {fechaStr}\nGracias por agendar. Si necesitas cambiar o cancelar, avísame."
+                : $"📅 Cita agendada: {serviceType.Nombre}{profStr}\n📅 {fechaStr} — PENDIENTE de confirmación.\nResponde CONFIRMAR para confirmarla, o escríbenos para cambiar o cancelar.";
+            await _messagingProvider.SendTextAsync(client.WhatsApp, mensaje, ct);
         }
         catch
         {

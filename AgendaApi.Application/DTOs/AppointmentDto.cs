@@ -24,6 +24,10 @@ public record AppointmentCreateDto
     public DateTime FechaInicio { get; init; }
     public DateTime FechaFin { get; init; }
     public string? Notas { get; init; }
+
+    /// <summary>Si true, la cita nace en "confirmed"; si false (default, flujo WhatsApp),
+    /// nace "pending" hasta que el cliente la confirme (responde CONFIRMAR).</summary>
+    public bool ConfirmarAlCrear { get; init; }
 }
 
 public record AppointmentRescheduleDto

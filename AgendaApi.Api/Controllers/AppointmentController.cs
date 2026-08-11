@@ -72,6 +72,9 @@ public class AppointmentController : ControllerBase
     {
         try
         {
+            // La API HTTP crea citas YA confirmadas; la confirmación por WhatsApp
+            // (pending → confirmed) aplica solo al flujo del asistente.
+            dto = dto with { ConfirmarAlCrear = true };
             var result = await _createUseCase.ExecuteAsync(dto, ct);
             return Ok(result);
         }

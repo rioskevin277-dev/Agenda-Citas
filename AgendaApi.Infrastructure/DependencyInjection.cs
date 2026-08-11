@@ -108,6 +108,9 @@ public static class DependencyInjection
         // Memoria de conversación (contexto entre mensajes)
         services.AddSingleton<ConversationMemoryService>();
 
+        // Estado estructurado por conversación (reserva en curso + escalado a humano)
+        services.AddSingleton<ConversationStateService>();
+
         services.AddScoped<ChatOrchestratorService>();
 
         return services;

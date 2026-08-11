@@ -257,4 +257,83 @@ public class CreateAppointmentUseCaseTests
         await act.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*no realiza el servicio*");
     }
+
+    [Fact]
+    public async Task ExecuteAsync_ByDefault_CreatesPendingAppointment()
+    {
+        // Arrange
+        var tenantId = Guid.NewGuid();
+        var clientId = Guid.NewGuid();
+        var serviceTypeId = Guid.NewGuid();
+
+        _clientRepo.Setup(r => r.GetByIdAsync(clientId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Client { IdClient = clientId, WhatsApp = "521234567890", Nombre = "Juan" });
+        _serviceTypeRepo.Setup(r => r.GetByIdAsync(serviceTypeId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ServiceType { IdServiceType = serviceTypeId, IdTenant = tenantId, DuracionMinutos = 60, BufferMinutos = 15 });
+        _appointmentRepo.Setup(r => r.GetByDateRangeAsync(tenantId, It.IsAny<DateTime>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Appointment>());
+        _appointmentRepo.Setup(r => r.CreateAsync(It.IsAny<Appointment>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Appointment a, CancellationToken _) => a);
+        _connectionRepo.Setup(r => r.GetByTenantIdAsync(tenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((CalendarConnection?)null);
+        _messagingProvider.Setup(m => m.SendTextAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var dto = new AppointmentCreateDto
+        {
+            TenantId = tenantId,
+            ClientId = clientId,
+            ServiceTypeId = serviceTypeId,
+            FechaInicio = new DateTime(2026, 8, 20, 10, 0, 0, DateTimeKind.Utc)
+        };
+
+        // Act
+        var result = await _useCase.ExecuteAsync(dto);
+
+        // Assert: flujo WhatsApp (default) → nace PENDIENTE de confirmación
+        result!.Status.Should().Be("pending");
+        _appointmentRepo.Verify(r => r.CreateAsync(
+            It.Is<Appointment>(a => a.Estado == "pending"),
+            It.IsAny<CancellationToken>()));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithConfirmarAlCrear_CreatesConfirmedAppointment()
+    {
+        // Arrange
+        var tenantId = Guid.NewGuid();
+        var clientId = Guid.NewGuid();
+        var serviceTypeId = Guid.NewGuid();
+
+        _clientRepo.Setup(r => r.GetByIdAsync(clientId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Client { IdClient = clientId, WhatsApp = "521234567890", Nombre = "Juan" });
+        _serviceTypeRepo.Setup(r => r.GetByIdAsync(serviceTypeId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ServiceType { IdServiceType = serviceTypeId, IdTenant = tenantId, DuracionMinutos = 60, BufferMinutos = 15 });
+        _appointmentRepo.Setup(r => r.GetByDateRangeAsync(tenantId, It.IsAny<DateTime>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Appointment>());
+        _appointmentRepo.Setup(r => r.CreateAsync(It.IsAny<Appointment>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Appointment a, CancellationToken _) => a);
+        _connectionRepo.Setup(r => r.GetByTenantIdAsync(tenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((CalendarConnection?)null);
+        _messagingProvider.Setup(m => m.SendTextAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var dto = new AppointmentCreateDto
+        {
+            TenantId = tenantId,
+            ClientId = clientId,
+            ServiceTypeId = serviceTypeId,
+            FechaInicio = new DateTime(2026, 8, 21, 11, 0, 0, DateTimeKind.Utc),
+            ConfirmarAlCrear = true
+        };
+
+        // Act
+        var result = await _useCase.ExecuteAsync(dto);
+
+        // Assert: la API HTTP crea la cita YA confirmada
+        result!.Status.Should().Be("confirmed");
+        _appointmentRepo.Verify(r => r.CreateAsync(
+            It.Is<Appointment>(a => a.Estado == "confirmed"),
+            It.IsAny<CancellationToken>()));
+    }
 }

@@ -89,4 +89,25 @@ public class AppointmentRepository : IAppointmentRepository
     public async Task<Appointment?> GetByExternalEventIdAsync(string externalEventId, CancellationToken ct = default)
         => await _context.Appointments
             .FirstOrDefaultAsync(a => a.ExternalEventId == externalEventId, ct);
+
+    /// <summary>
+    /// Citas futuras no canceladas cuyo evento externo falta (ExternalEventId == null).
+    /// Reparan la sincronización local → externo. Misma conversión de zona horaria que
+    /// GetPendingRemindersAsync ("ahora" del negocio marcado como UTC).
+    /// </summary>
+    public async Task<List<Appointment>> GetMissingExternalEventsAsync(CancellationToken ct = default)
+    {
+        var colombiaNow = TimeZoneInfo.ConvertTimeFromUtc(
+            DateTime.UtcNow,
+            TimeZoneInfo.FindSystemTimeZoneById(
+                Environment.GetEnvironmentVariable("Calendar__TimeZone") ?? "America/Bogota"));
+        var now = DateTime.SpecifyKind(colombiaNow, DateTimeKind.Utc);
+
+        return await _context.Appointments
+            .Where(a => a.Estado != "cancelled"
+                        && a.ExternalEventId == null
+                        && a.FechaInicio >= now)
+            .OrderBy(a => a.FechaInicio)
+            .ToListAsync(ct);
+    }
 }

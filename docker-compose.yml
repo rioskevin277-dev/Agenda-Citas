@@ -51,6 +51,7 @@ services:
       - MicrosoftOAuth__ClientSecret=${MicrosoftOAuth__ClientSecret}
       - PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
       - Calendar__TimeZone=${Calendar__TimeZone}
+      - Notificaciones__WhatsAppDueno=${NOTIFICACIONES_WHATSAPP_DUENO}
       - ASPNETCORE_URLS=http://+:8080
       - ASPNETCORE_ENVIRONMENT=Production
     networks:
