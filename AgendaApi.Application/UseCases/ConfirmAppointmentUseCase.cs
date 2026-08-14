@@ -1,5 +1,6 @@
 using AgendaApi.Application.DTOs;
 using AgendaApi.Domain.Ports;
+using AgendaApi.Domain.Services;
 
 namespace AgendaApi.Application.UseCases;
 
@@ -87,6 +88,9 @@ public class ConfirmAppointmentUseCase
         await _appointmentRepo.UpdateAsync(appointment, ct);
         await _unitOfWork.SaveChangesAsync(ct);
 
+        // CRM: refrescar estado/próxima cita del cliente tras confirmar su cita.
+        await RefreshClientAsync(appointment.IdClient, ct);
+
         return new AppointmentResponseDto
         {
             Id = appointment.IdAppointment,
@@ -96,5 +100,16 @@ public class ConfirmAppointmentUseCase
             FechaFin = appointment.FechaFin,
             Status = appointment.Estado
         };
+    }
+
+    /// <summary>Refresca el estado y la próxima cita del cliente a partir de su historial (CRM).</summary>
+    private async Task RefreshClientAsync(Guid clientId, CancellationToken ct)
+    {
+        var client = await _clientRepo.GetByIdAsync(clientId, ct);
+        if (client == null) return;
+        var citas = await _appointmentRepo.GetByClientIdAsync(client.IdClient, ct);
+        ClientStateCalculator.ApplyDerivedState(client, citas, DateTime.UtcNow);
+        await _clientRepo.UpdateAsync(client, ct);
+        await _unitOfWork.SaveChangesAsync(ct);
     }
 }

@@ -1,5 +1,6 @@
 using AgendaApi.Application.DTOs;
 using AgendaApi.Domain.Ports;
+using AgendaApi.Domain.Services;
 
 namespace AgendaApi.Application.UseCases;
 
@@ -16,6 +17,7 @@ public class RescheduleAppointmentUseCase
     private readonly IClientRepository _clientRepo;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IBookingPolicy _bookingPolicy;
+    private readonly IWaitlistNotifier _waitlistNotifier;
 
     public RescheduleAppointmentUseCase(
         IAppointmentRepository appointmentRepo,
@@ -24,7 +26,8 @@ public class RescheduleAppointmentUseCase
         ICalendarProviderFactory providerFactory,
         IClientRepository clientRepo,
         IUnitOfWork unitOfWork,
-        IBookingPolicy bookingPolicy)
+        IBookingPolicy bookingPolicy,
+        IWaitlistNotifier waitlistNotifier)
     {
         _appointmentRepo = appointmentRepo;
         _serviceTypeRepo = serviceTypeRepo;
@@ -33,6 +36,7 @@ public class RescheduleAppointmentUseCase
         _clientRepo = clientRepo;
         _unitOfWork = unitOfWork;
         _bookingPolicy = bookingPolicy;
+        _waitlistNotifier = waitlistNotifier;
     }
 
     public async Task<AppointmentResponseDto?> ExecuteAsync(AppointmentRescheduleDto dto, CancellationToken ct = default)
@@ -147,6 +151,20 @@ public class RescheduleAppointmentUseCase
         // respuesta del asistente (un único mensaje). El adaptador requiere el token/phone
         // del tenant, que solo está completo en el flujo del webhook; en la API no aplica.
 
+        // CRM: refrescar estado/próxima cita del cliente tras reprogramar su cita.
+        await RefreshClientAsync(appointment.IdClient, ct);
+
+        // P1 Lista de espera (fast path): el slot original que quedó libre puede matchear una
+        // entrada en espera. Se dispara aquí para no esperar ≤5 min al job. No-fatal.
+        try
+        {
+            await _waitlistNotifier.ScanAndNotifyAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            System.Console.WriteLine($"[RescheduleAppointment] Error notificando lista de espera: {ex.Message}");
+        }
+
         return new AppointmentResponseDto
         {
             Id = appointment.IdAppointment,
@@ -156,5 +174,16 @@ public class RescheduleAppointmentUseCase
             FechaFin = appointment.FechaFin,
             Status = appointment.Estado
         };
+    }
+
+    /// <summary>Refresca el estado y la próxima cita del cliente a partir de su historial (CRM).</summary>
+    private async Task RefreshClientAsync(Guid clientId, CancellationToken ct)
+    {
+        var client = await _clientRepo.GetByIdAsync(clientId, ct);
+        if (client == null) return;
+        var citas = await _appointmentRepo.GetByClientIdAsync(client.IdClient, ct);
+        ClientStateCalculator.ApplyDerivedState(client, citas, DateTime.UtcNow);
+        await _clientRepo.UpdateAsync(client, ct);
+        await _unitOfWork.SaveChangesAsync(ct);
     }
 }

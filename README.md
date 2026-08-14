@@ -101,6 +101,30 @@ se envía texto libre solo dentro de la ventana de sesión.
 
 ---
 
+## 🙋 Handoff a asesor humano
+
+Cuando el cliente pide hablar con una persona, presenta un reclamo/urgencia o el AI no puede
+resolverlo (fallo de proveedores, máximo de iteraciones), el turno se **escala a un humano**:
+
+1. **Ticket durable** en la tabla `handoffs` (tenant, teléfono del cliente, motivo, contexto
+   estructurado del turno, estado) — la cola y la auditoría **sobreviven a un redeploy**.
+2. **Aviso al asesor** por WhatsApp (`Notificaciones__WhatsAppDueno`), con el contexto de lo
+   que el AI hizo en el turno antes de entregar la conversación.
+3. **Gate de congelado**: mientras el ticket está abierto, el AI no responde ni ejecuta
+   herramientas; los mensajes del cliente reciben "un asesor te está atendiendo" y quedan en mano del humano.
+4. **Canal del asesor por WhatsApp**: cuando el número del dueño escribe, su mensaje se **reenvía
+   al cliente** y el ticket pasa a `HumanActive`. Cuando manda **FIN**, el ticket se cierra
+   (`AiResumed`), el cliente recibe "el asistente quedó disponible" y el AI retoma la conversación.
+
+Estados del ticket: `Normal` → `HumanPending` → `HumanActive` → `AiResumed` (persistidos como string).
+
+> **Limitación (sin reemplazo por templates aún):** el aviso al asesor usa texto libre, así que
+> WhatsApp solo lo entrega si el dueño tiene **sesión abierta de 24h** con el bot. Si el dueño
+> nunca escribe, el envío falla con `131047 Re-engagement message` (el ticket igual queda
+> registrado en `handoffs`). Un **template aprobado** para el aviso al dueño resolvería esto.
+
+---
+
 ## 🚀 Inicio Rápido — Desarrollo Local
 
 ### Requisitos

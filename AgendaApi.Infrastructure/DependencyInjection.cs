@@ -39,6 +39,7 @@ public static class DependencyInjection
         services.AddScoped<IProfessionalRepository, ProfessionalRepository>();
         services.AddScoped<IAvailabilityRepository, AvailabilityRepository>();
         services.AddScoped<IReminderLogRepository, ReminderLogRepository>();
+        services.AddScoped<IWaitlistEntryRepository, WaitlistEntryRepository>();
 
         // Tenant Context (scoped)
         services.AddScoped<ITenantContext, TenantContext>();
@@ -110,8 +111,16 @@ public static class DependencyInjection
         services.AddSingleton<ConversationMemoryService>();
         services.AddSingleton<IConversationSessionService>(sp => sp.GetRequiredService<ConversationMemoryService>());
 
-        // Estado estructurado por conversación (reserva en curso + escalado a humano)
+        // Estado estructurado por conversación (reserva en curso)
         services.AddSingleton<ConversationStateService>();
+
+        // CRM: memoria operativa del cliente para ADAM (contexto del cliente para la IA)
+        services.AddScoped<ClientContextService>();
+        services.AddScoped<IConversationHistoryRepository, ConversationHistoryRepository>();
+
+        // Handoff a asesor humano: ticket durable en BD + canal del asesor por WhatsApp
+        services.AddScoped<IHandoffRepository, HandoffRepository>();
+        services.AddScoped<HandoffService>();
 
         services.AddScoped<ChatOrchestratorService>();
 

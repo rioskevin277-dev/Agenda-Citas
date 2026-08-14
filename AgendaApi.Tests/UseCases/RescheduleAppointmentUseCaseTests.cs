@@ -17,6 +17,7 @@ public class RescheduleAppointmentUseCaseTests
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
     private readonly Mock<ICalendarProvider> _calendarProvider = new();
     private readonly Mock<IBookingPolicy> _bookingPolicy = new();
+    private readonly Mock<IWaitlistNotifier> _waitlistNotifier = new();
 
     private readonly RescheduleAppointmentUseCase _useCase;
 
@@ -34,7 +35,8 @@ public class RescheduleAppointmentUseCaseTests
             _providerFactory.Object,
             _clientRepo.Object,
             _unitOfWork.Object,
-            _bookingPolicy.Object);
+            _bookingPolicy.Object,
+            _waitlistNotifier.Object);
     }
 
     [Fact]

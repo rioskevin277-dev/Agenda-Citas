@@ -20,6 +20,7 @@ public static class AppointmentToolDefinitions
             RescheduleAppointmentTool(),
             ConfirmAppointmentTool(),
             ListAppointmentsTool(),
+            AddToWaitlistTool(),
             RequestHumanAttentionTool()
         };
     }
@@ -37,6 +38,7 @@ public static class AppointmentToolDefinitions
             RescheduleAppointmentToolAnthropic(),
             ConfirmAppointmentToolAnthropic(),
             ListAppointmentsToolAnthropic(),
+            AddToWaitlistToolAnthropic(),
             RequestHumanAttentionToolAnthropic()
         };
     }
@@ -446,6 +448,74 @@ public static class AppointmentToolDefinitions
                     motivo = new { type = "string", description = "Motivo o resumen de por qué se escala" }
                 },
                 required = new[] { "motivo" }
+            }
+        };
+    }
+
+    // --- add_to_waitlist ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
+
+    private static object AddToWaitlistTool()
+    {
+        return new
+        {
+            type = "function",
+            function = new
+            {
+                name = "add_to_waitlist",
+                description = "Agrega al cliente a la lista de espera de un servicio, de modo que se le " +
+                              "notifique por WhatsApp cuando se libere un cupo. Usarla cuando el cliente quiera " +
+                              "un servicio pero NO haya disponibilidad en el rango que pide (check_availability " +
+                              "no devuelve cupos) y el cliente acepte esperar un cupo que se libere.",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        service_type_name = new
+                        {
+                            type = "string",
+                            description = "Nombre exacto del servicio (ej: Consulta General, Corte de pelo)"
+                        },
+                        professional_name = new
+                        {
+                            type = "string",
+                            description = "Opcional. Nombre del profesional preferido (ej: Dra. María). Si se omite, espera cualquier cupo del servicio."
+                        },
+                        fecha_desde = new
+                        {
+                            type = "string",
+                            description = "Opcional. Preferencia de inicio del rango de fechas (YYYY-MM-DD)."
+                        },
+                        fecha_hasta = new
+                        {
+                            type = "string",
+                            description = "Opcional. Preferencia de fin del rango de fechas (YYYY-MM-DD)."
+                        }
+                    },
+                    required = new[] { "service_type_name" }
+                }
+            }
+        };
+    }
+
+    private static object AddToWaitlistToolAnthropic()
+    {
+        return new
+        {
+            name = "add_to_waitlist",
+            description = "Agrega al cliente a la lista de espera de un servicio (se le avisa por WhatsApp cuando " +
+                          "se libere un cupo). Usar cuando no haya disponibilidad y el cliente acepte esperar.",
+            input_schema = new
+            {
+                type = "object",
+                properties = new
+                {
+                    service_type_name = new { type = "string", description = "Nombre exacto del servicio" },
+                    professional_name = new { type = "string", description = "Profesional preferido (opcional) — ej: Dra. María" },
+                    fecha_desde = new { type = "string", description = "Rango inicio (YYYY-MM-DD, opcional)" },
+                    fecha_hasta = new { type = "string", description = "Rango fin (YYYY-MM-DD, opcional)" }
+                },
+                required = new[] { "service_type_name" }
             }
         };
     }

@@ -4,6 +4,7 @@ using AgendaApi.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace AgendaApi.Infrastructure.Migrations
 {
     [DbContext(typeof(AgendaDbContext))]
-    partial class AgendaDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260813182836_AddConversationHistory")]
+    partial class AddConversationHistory
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -767,72 +770,6 @@ namespace AgendaApi.Infrastructure.Migrations
                     b.ToTable("tenants", (string)null);
                 });
 
-            modelBuilder.Entity("AgendaApi.Domain.Entities.WaitlistEntry", b =>
-                {
-                    b.Property<Guid>("IdWaitlistEntry")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier")
-                        .HasColumnName("id_waitlist_entry");
-
-                    b.Property<string>("Estado")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(20)
-                        .HasColumnType("nvarchar(20)")
-                        .HasDefaultValue("active")
-                        .HasColumnName("estado");
-
-                    b.Property<DateTime>("FechaActualizacion")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("datetime2")
-                        .HasColumnName("fecha_actualizacion")
-                        .HasDefaultValueSql("GETUTCDATE()");
-
-                    b.Property<DateTime>("FechaCreacion")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("datetime2")
-                        .HasColumnName("fecha_creacion")
-                        .HasDefaultValueSql("GETUTCDATE()");
-
-                    b.Property<DateTime?>("FechaDesde")
-                        .HasColumnType("datetime2")
-                        .HasColumnName("fecha_desde");
-
-                    b.Property<DateTime?>("FechaHasta")
-                        .HasColumnType("datetime2")
-                        .HasColumnName("fecha_hasta");
-
-                    b.Property<Guid>("IdClient")
-                        .HasColumnType("uniqueidentifier")
-                        .HasColumnName("id_client");
-
-                    b.Property<Guid?>("IdProfessional")
-                        .HasColumnType("uniqueidentifier")
-                        .HasColumnName("id_professional");
-
-                    b.Property<Guid>("IdServiceType")
-                        .HasColumnType("uniqueidentifier")
-                        .HasColumnName("id_service_type");
-
-                    b.Property<Guid>("IdTenant")
-                        .HasColumnType("uniqueidentifier")
-                        .HasColumnName("id_tenant");
-
-                    b.HasKey("IdWaitlistEntry");
-
-                    b.HasIndex("IdClient");
-
-                    b.HasIndex("IdProfessional");
-
-                    b.HasIndex("IdServiceType");
-
-                    b.HasIndex("IdTenant", "Estado");
-
-                    b.HasIndex("IdTenant", "IdServiceType", "IdProfessional", "Estado");
-
-                    b.ToTable("waitlist_entries", (string)null);
-                });
-
             modelBuilder.Entity("AgendaApi.Domain.Entities.Appointment", b =>
                 {
                     b.HasOne("AgendaApi.Domain.Entities.Client", "Client")
@@ -959,40 +896,6 @@ namespace AgendaApi.Infrastructure.Migrations
                         .HasForeignKey("IdTenant")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
-
-                    b.Navigation("Tenant");
-                });
-
-            modelBuilder.Entity("AgendaApi.Domain.Entities.WaitlistEntry", b =>
-                {
-                    b.HasOne("AgendaApi.Domain.Entities.Client", "Client")
-                        .WithMany()
-                        .HasForeignKey("IdClient")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("AgendaApi.Domain.Entities.Professional", "Professional")
-                        .WithMany()
-                        .HasForeignKey("IdProfessional")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("AgendaApi.Domain.Entities.ServiceType", "ServiceType")
-                        .WithMany()
-                        .HasForeignKey("IdServiceType")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("AgendaApi.Domain.Entities.Tenant", "Tenant")
-                        .WithMany()
-                        .HasForeignKey("IdTenant")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Client");
-
-                    b.Navigation("Professional");
-
-                    b.Navigation("ServiceType");
 
                     b.Navigation("Tenant");
                 });

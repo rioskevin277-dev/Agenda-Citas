@@ -3,6 +3,18 @@ using AgendaApi.Domain.Entities;
 namespace AgendaApi.Domain.Ports;
 
 /// <summary>
+/// Puerto para el notificador de lista de espera: detecta cupos liberados y avisa (FIFO)
+/// a los clientes en espera. Lo usan el job periódico (WaitlistNotificationBackgroundService)
+/// y el fast path de Cancel/Reschedule (para no esperar ≤5 min cuando el hueco es reactivo a la API).
+/// </summary>
+public interface IWaitlistNotifier
+{
+    /// <summary>Escanea las entradas activas y notifica los cupos liberados (no-op si no hay cola).
+    /// Devuelve cuántas notificaciones se enviaron.</summary>
+    Task<int> ScanAndNotifyAsync(CancellationToken ct = default);
+}
+
+/// <summary>
 /// Puerto para el repositorio de tenants.
 /// </summary>
 public interface ITenantRepository
@@ -124,6 +136,9 @@ public interface IClientRepository
     Task<Client?> GetByIdAsync(Guid id, CancellationToken ct = default);
     Task<Client> CreateAsync(Client client, CancellationToken ct = default);
     Task UpdateAsync(Client client, CancellationToken ct = default);
+
+    /// <summary>Clientes del tenant (ordenados por nombre). query opcional filtra por nombre/whatsapp.</summary>
+    Task<List<Client>> GetByTenantIdAsync(Guid tenantId, string? query = null, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -135,4 +150,53 @@ public interface IReminderLogRepository
     Task<ReminderLog?> GetByWamIdAsync(string wamId, CancellationToken ct = default);
     Task AddAsync(ReminderLog log, CancellationToken ct = default);
     Task UpdateAsync(ReminderLog log, CancellationToken ct = default);
+}
+
+/// <summary>
+/// Puerto para los tickets de escalado a humano (handoff) por conversación.
+/// </summary>
+public interface IHandoffRepository
+{
+    /// <summary>Handoff abierto (HumanPending o HumanActive) de la conversación, si existe.</summary>
+    Task<Handoff?> GetOpenByPhoneAsync(Guid tenantId, string phoneCliente, CancellationToken ct = default);
+
+    /// <summary>Último ticket de la conversación (para auditoría, exista o no uno abierto).</summary>
+    Task<Handoff?> GetLatestByPhoneAsync(Guid tenantId, string phoneCliente, CancellationToken ct = default);
+
+    /// <summary>Cola de handoffs abiertos del tenant (los más antiguos primero).</summary>
+    Task<List<Handoff>> GetOpenByTenantAsync(Guid tenantId, CancellationToken ct = default);
+
+    Task AddAsync(Handoff handoff, CancellationToken ct = default);
+    Task UpdateAsync(Handoff handoff, CancellationToken ct = default);
+}
+
+/// <summary>
+/// Puerto para el historial durable de mensajes de conversación (pilar "Conversaciones" del CRM).
+/// </summary>
+public interface IConversationHistoryRepository
+{
+    Task AddAsync(ConversationMessage message, CancellationToken ct = default);
+
+    /// <summary>Últimos N mensajes de la conversación de un cliente, más recientes primero.</summary>
+    Task<List<ConversationMessage>> GetRecentAsync(Guid tenantId, string phoneCliente, int limit = 20, CancellationToken ct = default);
+}
+
+/// <summary>
+/// Puerto para la lista de espera (waitlist): clientes apuntados a un servicio para ser
+/// notificados cuando se libere un cupo.
+/// </summary>
+public interface IWaitlistEntryRepository
+{
+    /// <summary>Entradas activas del tenant (para gestión/auditoría).</summary>
+    Task<List<WaitlistEntry>> GetActiveByTenantAsync(Guid tenantId, CancellationToken ct = default);
+
+    /// <summary>TODAS las entradas activas de todos los tenants; el job de notificación las recorre
+    /// en FIFO (FechaCreacion) agrupadas por servicio/profesional.</summary>
+    Task<List<WaitlistEntry>> GetActiveAsync(CancellationToken ct = default);
+
+    /// <summary>Entrada activa del mismo cliente + servicio (primeros en la cola FIFO).</summary>
+    Task<WaitlistEntry?> GetActiveByClientAndServiceAsync(Guid tenantId, Guid clientId, Guid serviceTypeId, CancellationToken ct = default);
+
+    Task<WaitlistEntry> CreateAsync(WaitlistEntry entry, CancellationToken ct = default);
+    Task UpdateAsync(WaitlistEntry entry, CancellationToken ct = default);
 }

@@ -48,6 +48,8 @@ public class ChatOrchestratorService
         };
         var messaging = services.GetRequiredService<IMessagingProvider>();
         var tenantContext = services.GetRequiredService<ITenantContext>();
+        var conversationHistory = services.GetRequiredService<IConversationHistoryRepository>();
+        var unitOfWork = services.GetRequiredService<IUnitOfWork>();
 
         // Cargar datos reales del tenant desde la BD
         var tenantRepo = services.GetRequiredService<ITenantRepository>();
@@ -58,6 +60,27 @@ public class ChatOrchestratorService
             calendarProvider: tenant?.CalendarProvider ?? "google",
             whatsAppAccessToken: Environment.GetEnvironmentVariable("WhatsApp__AccessToken") ?? Environment.GetEnvironmentVariable("WHATSAPP_ACCESS_TOKEN") ?? "",
             phoneNumberId: tenant?.WhatsAppPhoneNumberId ?? "");
+
+        // GATE DE HANDOFF: si la conversación está escalada a un humano (pendiente o activa),
+        // el AI queda congelado: no responde ni ejecuta herramientas mientras el asesor atiende.
+        // El control vuelve al AI cuando el asesor cierra el handoff (FIN → AiResumed).
+        var conversationKey = ConversationMemoryService.GetKey(tenantId, userPhone);
+        var handoffRepo = services.GetRequiredService<IHandoffRepository>();
+        var openHandoff = await handoffRepo.GetOpenByPhoneAsync(tenantId, userPhone, ct);
+        if (openHandoff != null)
+        {
+            var waitingText = openHandoff.Estado == Domain.Entities.HandoffState.HumanActive
+                ? "Un asesor te está atendiendo. Esperá un momento, por favor. 🙏"
+                : "Recibí tu mensaje. Un asesor humano está revisando tu caso y te va a responder por este chat. 🙏";
+            _conversationMemory.AddUser(conversationKey, messageContent);
+            await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "user", messageContent, ct);
+            await messaging.SendTextAsync(userPhone, waitingText, ct);
+            _conversationMemory.AddAssistant(conversationKey, waitingText);
+            await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", waitingText, ct);
+            _logger.LogInformation("[Orchestrator] Mensaje de {Phone} en handoff activo ({State}), AI congelado",
+                userPhone, openHandoff.Estado);
+            return;
+        }
 
         // Cargar los tipos de servicio reales del tenant para que la IA solo pueda
         // sugerir/agendar servicios que de verdad existen (evita nombres inventados).
@@ -71,16 +94,34 @@ public class ChatOrchestratorService
         _logger.LogInformation("[Orchestrator] Procesando mensaje de {Phone} para tenant {Tenant}",
             userPhone, tenantId);
 
-        // Estado estructurado de la conversación: reserva en curso y si ya se escaló a humano.
-        var conversationKey = ConversationMemoryService.GetKey(tenantId, userPhone);
+        // Estado estructurado de la conversación: reserva en curso.
         var pendingBooking = _conversationState.GetPendingBooking(conversationKey);
 
-        var systemPrompt = GetSystemPrompt(userPhone, clientName, serviceTypes, professionals, pendingBooking);
+        // CRM: memoria operativa del cliente. Compila perfil/estado/historial desde la BD
+        // (creando el cliente si es su primer contacto) y se inyecta en el system prompt para
+        // que ADAM conozca el contexto del cliente al atenderlo, agendar o hacer seguimiento.
+        string clientContext = "";
+        try
+        {
+            var clientContextService = services.GetRequiredService<ClientContextService>();
+            clientContext = await clientContextService.BuildClientContextAsync(tenantId, userPhone, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[CRM] No se pudo compilar el contexto del cliente {Phone}", userPhone);
+        }
+
+        var systemPrompt = GetSystemPrompt(userPhone, clientName, serviceTypes, professionals, pendingBooking, clientContext);
 
         // Cargar historial previo de la conversación (si existe) para conservar contexto.
         var messages = _conversationMemory.GetHistory(conversationKey, systemPrompt);
         messages.Add(new ChatMessage { Role = "user", Content = messageContent });
         _conversationMemory.AddUser(conversationKey, messageContent);
+        await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "user", messageContent, ct);
+
+        // Acciones del AI en este turno en texto legible; se incluyen como contexto
+        // estructurado en el aviso al asesor si el turno termina en escalado.
+        var accionesPrevias = new List<string>();
 
         for (int iteration = 0; iteration < MaxToolIterations; iteration++)
         {
@@ -114,9 +155,10 @@ public class ChatOrchestratorService
                 _logger.LogError("[Orchestrator] Todos los proveedores fallaron: {Error}", result.TextContent);
                 const string errorText = "Lo siento, tuve un problema. Por favor intenta mas tarde.";
                 await EscalateToHumanAsync(services, tenantId, userPhone, clientName,
-                    "Todos los proveedores de IA fallaron al procesar la solicitud del cliente.", ct);
+                    "Todos los proveedores de IA fallaron al procesar la solicitud del cliente.", accionesPrevias, ct);
                 await messaging.SendTextAsync(userPhone, errorText);
                 _conversationMemory.AddAssistant(conversationKey, errorText);
+                await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", errorText, ct);
                 return;
             }
             _logger.LogInformation("[Orchestrator] Respondiendo con {Provider}", usedProvider);
@@ -142,6 +184,7 @@ public class ChatOrchestratorService
                 var responseText = result.TextContent ?? "En que mas puedo ayudarte?";
                 await messaging.SendTextAsync(userPhone, responseText);
                 _conversationMemory.AddAssistant(conversationKey, responseText);
+                await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", responseText, ct);
                 return;
             }
 
@@ -150,7 +193,8 @@ public class ChatOrchestratorService
                 _logger.LogInformation("[Orchestrator] Ejecutando tool: {Name}({Args})",
                     toolCall.Name, toolCall.Arguments);
 
-                var toolResult = await ExecuteToolAsync(toolCall.Name, toolCall.Arguments, services, tenantId, userPhone, clientName, ct);
+                var toolResult = await ExecuteToolAsync(toolCall.Name, toolCall.Arguments, services, tenantId, userPhone, clientName, accionesPrevias, ct);
+                accionesPrevias.Add(ToolActionSummarizer.Summarize(toolCall.Name, toolResult));
 
                 // Rastrear el agendamiento en curso (P3): lo que el cliente dejó a medio armar.
                 TrackBookingProgress(conversationKey, toolCall, toolResult);
@@ -168,9 +212,10 @@ public class ChatOrchestratorService
         _logger.LogWarning("[Orchestrator] Maximo de iteraciones alcanzado ({Max})", MaxToolIterations);
         const string maxIterText = "Estoy procesando tu solicitud. Un asesor te contactara pronto para confirmar.";
         await EscalateToHumanAsync(services, tenantId, userPhone, clientName,
-            "Se alcanzó el máximo de iteraciones AI sin resolver la solicitud del cliente.", ct);
+            "Se alcanzó el máximo de iteraciones AI sin resolver la solicitud del cliente.", accionesPrevias, ct);
         await messaging.SendTextAsync(userPhone, maxIterText);
         _conversationMemory.AddAssistant(conversationKey, maxIterText);
+        await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", maxIterText, ct);
     }
 
     private async Task<string> ExecuteToolAsync(
@@ -180,6 +225,7 @@ public class ChatOrchestratorService
         Guid tenantId,
         string userPhone,
         string? clientName,
+        IReadOnlyList<string> accionesPrevias,
         CancellationToken ct)
     {
         try
@@ -195,7 +241,8 @@ public class ChatOrchestratorService
                 "confirm_appointment" => await ConfirmAppointmentAsync(args, services, tenantId, ct),
                 "reschedule_appointment" => await RescheduleAppointmentAsync(args, services, tenantId, ct),
                 "list_appointments" => await ListAppointmentsAsync(args, services, tenantId, ct),
-                "request_human_attention" => await RequestHumanAttentionAsync(args, services, tenantId, userPhone, clientName, ct),
+                "add_to_waitlist" => await AddToWaitlistAsync(args, services, tenantId, userPhone, clientName, ct),
+                "request_human_attention" => await RequestHumanAttentionAsync(args, services, tenantId, userPhone, clientName, accionesPrevias, ct),
                 _ => "{\"error\":\"Tool desconocida: " + toolName + "\"}"
             };
         }
@@ -211,7 +258,7 @@ public class ChatOrchestratorService
         }
     }
 
-    private static string GetSystemPrompt(string userPhone, string? clientName, List<Domain.Entities.ServiceType>? serviceTypes = null, List<Domain.Entities.Professional>? professionals = null, PendingBooking? pendingBooking = null)
+    private static string GetSystemPrompt(string userPhone, string? clientName, List<Domain.Entities.ServiceType>? serviceTypes = null, List<Domain.Entities.Professional>? professionals = null, PendingBooking? pendingBooking = null, string? clientContext = null)
     {
         string senderIdentity = string.IsNullOrWhiteSpace(clientName)
             ? $"El cliente que te escribe tiene el WhatsApp {userPhone}."
@@ -268,6 +315,7 @@ REGLAS IMPORTANTES:
 8.5 RESPONDIENDO AL RECORDATORIO: si el cliente responde CONFIRMAR, usa confirm_appointment (identifica la cita con su WhatsApp y confirma la proxima). Si dice REAGENDAR (o ""cambiar fecha""), preguntale la nueva fecha/hora, usa check_availability y luego reschedule_appointment. Si dice CANCELAR, usa cancel_appointment. Tras CONFIRMAR o CANCELAR termina el turno. Tras REAGENDAR confirma la nueva fecha; y si la cita estaba confirmada, el sistema la deja nuevamente PENDIENTE, asi que pidele al cliente responder CONFIRMAR para re-confirmarla.
 8.6 CONFIRMACION DE CITA: cuando crees una cita, queda PENDIENTE hasta que el cliente la confirme. Informale que debe confirmarla y pedile hacerlo. Cuando el cliente confirme (diga 'si', 'confirmo', 'confirmar' o acepte), usa confirm_appointment con su WhatsApp para confirmarla. Tras confirmar, termina el turno y no repitas la pregunta.
 8.7 ATENCION HUMANA: si el cliente pide hablar con una persona o asesor humano, presenta un reclamo, una urgencia, o necesita algo que no se puede resolver con las herramientas, usa request_human_attention con el motivo, informale que un asesor se comunicara pronto con el y termina el turno.
+8.8 LISTA DE ESPERA: si el cliente quiere un servicio pero NO hay disponibilidad (check_availability no devuelve cupos, o la fecha/hora que quiere esta ocupada o fuera del rango permitido), ofrecele agregarse a la lista de espera con add_to_waitlist (usa el nombre exacto del servicio que pidio). Si acepta, confirma el servicio y, si quiere, el rango de fechas (fecha_desde/fecha_hasta) y el profesional preferido (professional_name) — todos opcionales. Informale que se le avisara por WhatsApp cuando se libere un cupo y termina el turno. Si dice que solo queria probar fechas, no lo agregues.
 
 CLIENTE ACTUAL:
 " + senderIdentity + @"
@@ -286,7 +334,8 @@ HERRAMIENTAS DISPONIBLES:
 - confirm_appointment: Confirmar una cita (cliente respondio CONFIRMAR)
 - reschedule_appointment: Reprogramar una cita
 - list_appointments: Listar las citas del cliente
-- request_human_attention: Escalar al cliente a un asesor humano (cuando lo pida o no se pueda resolver)" + reservaEnCurso;
+- add_to_waitlist: Agregar al cliente a la lista de espera de un servicio (cuando no haya disponibilidad y el cliente lo acepte)
+- request_human_attention: Escalar al cliente a un asesor humano (cuando lo pida o no se pueda resolver)" + (clientContext ?? "") + reservaEnCurso;
     }
 
     // Tool Handlers
@@ -440,6 +489,119 @@ HERRAMIENTAS DISPONIBLES:
         });
     }
 
+    /// <summary>
+    /// P1 Lista de espera: agrega al cliente (el remitente) a la lista de espera de un servicio.
+    /// Resuelve servicio/profesional por nombre, crea el cliente si no existe, y hace dedup
+    /// (una sola entrada activa por cliente+servicio). Rechaza si el cliente ya tiene una cita
+    /// pendiente/confirmada futura del mismo servicio (no tiene sentido esperar si ya está agendado).
+    /// </summary>
+    private async Task<string> AddToWaitlistAsync(
+        JsonElement args,
+        IServiceProvider services,
+        Guid tenantId,
+        string userPhone,
+        string? clientName,
+        CancellationToken ct)
+    {
+        var serviceTypeRepo = services.GetRequiredService<IServiceTypeRepository>();
+        var professionalRepo = services.GetRequiredService<IProfessionalRepository>();
+        var clientRepo = services.GetRequiredService<IClientRepository>();
+        var appointmentRepo = services.GetRequiredService<IAppointmentRepository>();
+        var waitlistRepo = services.GetRequiredService<IWaitlistEntryRepository>();
+        var unitOfWork = services.GetRequiredService<IUnitOfWork>();
+
+        var serviceName = args.GetProperty("service_type_name").GetString();
+        if (string.IsNullOrWhiteSpace(serviceName))
+        {
+            return JsonSerializer.Serialize(new { success = false, error = "Falta el nombre del servicio." });
+        }
+
+        // Resolver servicio (por nombre exacto o parcial, misma semántica que el flujo de create).
+        var servicesLst = await serviceTypeRepo.GetByTenantIdAsync(tenantId, ct);
+        var service = servicesLst.FirstOrDefault(s => s.Activo && s.Nombre.Contains(serviceName, StringComparison.OrdinalIgnoreCase));
+        if (service == null)
+        {
+            return JsonSerializer.Serialize(new { success = false, error = "El servicio solicitado no está disponible." });
+        }
+
+        // Resolver profesional opcional.
+        Domain.Entities.Professional? professional = null;
+        var profName = args.TryGetProperty("professional_name", out var profArg) ? profArg.GetString() : null;
+        if (!string.IsNullOrWhiteSpace(profName))
+        {
+            professional = await professionalRepo.GetActiveByTenantAndNameAsync(tenantId, profName, ct);
+            if (professional == null)
+            {
+                return JsonSerializer.Serialize(new { success = false, error = "El profesional solicitado no existe." });
+            }
+        }
+
+        // Preferencia de ventana de fechas (opcional).
+        DateTime? desde = null, hasta = null;
+        if (args.TryGetProperty("fecha_desde", out var d) && d.GetString() is { Length: > 0 } ds && DateTime.TryParse(ds, out var dp))
+            desde = dp;
+        if (args.TryGetProperty("fecha_hasta", out var h) && h.GetString() is { Length: > 0 } hs && DateTime.TryParse(hs, out var hp))
+            hasta = hp;
+        if (desde.HasValue && hasta.HasValue && hasta < desde)
+            (desde, hasta) = (hasta, desde);
+
+        // Cliente: el remitente real. Se crea si es primer contacto (misma convención que el CRM).
+        var client = await clientRepo.GetByWhatsAppAsync(userPhone, tenantId, ct);
+        if (client == null)
+        {
+            client = new Domain.Entities.Client
+            {
+                IdTenant = tenantId,
+                WhatsApp = userPhone,
+                Nombre = !string.IsNullOrWhiteSpace(clientName) ? clientName : null,
+                Estado = "nuevo"
+            };
+            client = await clientRepo.CreateAsync(client, ct);
+        }
+
+        // Dedup: no duplicar la entrada activa del mismo cliente+servicio.
+        var existing = await waitlistRepo.GetActiveByClientAndServiceAsync(tenantId, client.IdClient, service.IdServiceType, ct);
+        if (existing != null)
+        {
+            return JsonSerializer.Serialize(new { success = true, already_waitlisted = true, message = "El cliente ya está en la lista de espera de este servicio." });
+        }
+
+        // Rechazar si el cliente ya tiene cita pendiente/confirmada futura del mismo servicio.
+        var clientAppointments = await appointmentRepo.GetByClientIdAsync(client.IdClient, ct);
+        var businessNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow,
+            TimeZoneInfo.FindSystemTimeZoneById(Environment.GetEnvironmentVariable("Calendar__TimeZone") ?? "America/Bogota"));
+        var now = DateTime.SpecifyKind(businessNow, DateTimeKind.Utc);
+        var hasUpcoming = clientAppointments.Any(a => a.IdServiceType == service.IdServiceType
+                                                      && a.FechaInicio >= now
+                                                      && (a.Estado == "pending" || a.Estado == "confirmed"));
+        if (hasUpcoming)
+        {
+            return JsonSerializer.Serialize(new { success = false, already_booked = true, message = "El cliente ya tiene una cita para este servicio." });
+        }
+
+        var entry = new Domain.Entities.WaitlistEntry
+        {
+            IdTenant = tenantId,
+            IdClient = client.IdClient,
+            IdServiceType = service.IdServiceType,
+            IdProfessional = professional?.IdProfessional,
+            FechaDesde = desde,
+            FechaHasta = hasta
+        };
+        await waitlistRepo.CreateAsync(entry, ct);
+        await unitOfWork.SaveChangesAsync(ct);
+
+        _logger.LogInformation("[Waitlist] {Phone} agregado a lista de espera del servicio {Service}",
+            userPhone, service.Nombre);
+
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            message = "El cliente quedó en la lista de espera. Se le avisará por WhatsApp cuando se libere un cupo.",
+            waitlist_id = entry.IdWaitlistEntry
+        });
+    }
+
     private async Task<string> RescheduleAppointmentAsync(
         JsonElement args,
         IServiceProvider services,
@@ -510,13 +672,14 @@ HERRAMIENTAS DISPONIBLES:
         Guid tenantId,
         string userPhone,
         string? clientName,
+        IReadOnlyList<string> accionesPrevias,
         CancellationToken ct)
     {
         var motivo = args.TryGetProperty("motivo", out var m) ? m.GetString() : null;
         if (string.IsNullOrWhiteSpace(motivo))
             motivo = "El cliente pidió atención humana.";
 
-        await EscalateToHumanAsync(services, tenantId, userPhone, clientName, motivo!, ct);
+        await EscalateToHumanAsync(services, tenantId, userPhone, clientName, motivo!, accionesPrevias, ct);
 
         return JsonSerializer.Serialize(new
         {
@@ -527,10 +690,11 @@ HERRAMIENTAS DISPONIBLES:
     }
 
     /// <summary>
-    /// Escala la conversación a un humano: marca la conversación como escalada (para no
-    /// repetir avisos) y, si hay un número del dueño configurado (Notificaciones__WhatsAppDueno),
-    /// le envía un resumen por WhatsApp. Si no está configurado, solo queda el aviso al cliente
-    /// (la propia respuesta del asistente). Nunca rompe el turno del cliente.
+    /// Escala la conversación a un humano. Delega en <see cref="HandoffService"/>: crea el
+    /// ticket durable (dedup mientras haya uno abierto) y, si hay un número de asesor
+    /// configurado (Notificaciones__WhatsAppDueno), le envía el aviso con el contexto
+    /// estructurado del turno. Al crear el ticket, el GATE de ProcessMessageAsync congela
+    /// el AI hasta que el asesor cierre el handoff (FIN). Nunca rompe el turno del cliente.
     /// </summary>
     private async Task EscalateToHumanAsync(
         IServiceProvider services,
@@ -538,49 +702,21 @@ HERRAMIENTAS DISPONIBLES:
         string userPhone,
         string? clientName,
         string motivo,
+        IReadOnlyList<string>? accionesPrevias,
         CancellationToken ct)
     {
-        var conversationKey = ConversationStateService.GetKey(tenantId, userPhone);
         try
         {
-            if (_conversationState.IsEscalated(conversationKey))
-            {
-                _logger.LogDebug("[Orchestrator] Conversación {Key} ya escalada, sin repetir aviso", conversationKey);
-                return;
-            }
-
-            _conversationState.MarkEscalated(conversationKey);
-
-            var ownerNumber = Environment.GetEnvironmentVariable("Notificaciones__WhatsAppDueno")
-                           ?? Environment.GetEnvironmentVariable("NOTIFICACIONES_WHATSAPP_DUENO");
-            var tenantRepo = services.GetRequiredService<ITenantRepository>();
-            var tenant = await tenantRepo.GetByIdAsync(tenantId, ct);
-
-            if (string.IsNullOrWhiteSpace(ownerNumber) || tenant == null)
-            {
-                _logger.LogInformation("[Orchestrator] Escalado a humano sin canal del dueño configurado (cliente {Phone})",
-                    userPhone);
-                return;
-            }
-
-            // El envío al dueño exige el contexto de tenant (mismo patrón que SendRemindersUseCase).
-            var tenantContext = services.GetRequiredService<ITenantContext>();
-            tenantContext.SetTenant(
-                tenantId,
-                calendarProvider: tenant.CalendarProvider ?? "google",
-                whatsAppAccessToken: Environment.GetEnvironmentVariable("WhatsApp__AccessToken")
-                                   ?? Environment.GetEnvironmentVariable("WHATSAPP_ACCESS_TOKEN")
-                                   ?? "",
-                phoneNumberId: tenant.WhatsAppPhoneNumberId ?? "");
-
-            var clienteRef = string.IsNullOrWhiteSpace(clientName) ? userPhone : $"{clientName} ({userPhone})";
-            var tenantRef = tenant.NombreComercial ?? tenant.Nombre;
-            var messaging = services.GetRequiredService<IMessagingProvider>();
-            await messaging.SendTextAsync(
-                ownerNumber,
-                $"⚠️ Escalado a asesor humano\nTenant: {tenantRef}\nCliente: {clienteRef}\nMotivo: {motivo}",
-                ct);
-            _logger.LogInformation("[Orchestrator] Escalado a humano notificado para {Phone}", userPhone);
+            var handoffService = services.GetRequiredService<HandoffService>();
+            var contexto = accionesPrevias is { Count: > 0 }
+                ? string.Join("\n", accionesPrevias)
+                : null;
+            var handoff = await handoffService.EscalateAsync(tenantId, userPhone, clientName, motivo, contexto, ct);
+            if (handoff != null)
+                _logger.LogInformation("[Orchestrator] Escalado a humano registrado ({Id}) para {Phone}",
+                    handoff.IdHandoff, userPhone);
+            else
+                _logger.LogDebug("[Orchestrator] Conversación {Tenant}/{Phone} ya escalada, sin repetir", tenantId, userPhone);
         }
         catch (Exception ex)
         {
@@ -669,5 +805,40 @@ HERRAMIENTAS DISPONIBLES:
         return @"
 
 RESERVA EN CURSO: el cliente estaba armando una cita (" + string.Join(" ", partes) + @") y no la completó. Si el cliente retoma el tema de agendar, reconocé lo que tenía en marcha y retomá pidiendo solo lo que falta (idealmente el horario). NO des la cita por hecha: usá check_availability y luego create_appointment.";
+    }
+
+    /// <summary>
+    /// Persiste un turno de la conversación en el historial durable (CRM). Falla silencioso:
+    /// un problema al guardar el historial nunca debe romper el turno del cliente.
+    /// </summary>
+    private async Task PersistMessageAsync(
+        IConversationHistoryRepository history,
+        IUnitOfWork unitOfWork,
+        Guid tenantId,
+        string userPhone,
+        string role,
+        string content,
+        CancellationToken ct)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(content)) return;
+            if (content.Length > 4000)
+                content = content[..4000];
+
+            await history.AddAsync(new Domain.Entities.ConversationMessage
+            {
+                IdConversationMessage = Guid.NewGuid(),
+                IdTenant = tenantId,
+                PhoneCliente = userPhone,
+                Role = role,
+                Content = content
+            }, ct);
+            await unitOfWork.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[CRM] No se pudo persistir el turno de conversación de {Phone}", userPhone);
+        }
     }
 }

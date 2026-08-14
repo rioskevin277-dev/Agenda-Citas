@@ -1,5 +1,6 @@
 using AgendaApi.Application.DTOs;
 using AgendaApi.Domain.Ports;
+using AgendaApi.Domain.Services;
 
 namespace AgendaApi.Application.UseCases;
 
@@ -14,19 +15,22 @@ public class CancelAppointmentUseCase
     private readonly ICalendarProviderFactory _providerFactory;
     private readonly IClientRepository _clientRepo;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly IWaitlistNotifier _waitlistNotifier;
 
     public CancelAppointmentUseCase(
         IAppointmentRepository appointmentRepo,
         ICalendarConnectionRepository connectionRepo,
         ICalendarProviderFactory providerFactory,
         IClientRepository clientRepo,
-        IUnitOfWork unitOfWork)
+        IUnitOfWork unitOfWork,
+        IWaitlistNotifier waitlistNotifier)
     {
         _appointmentRepo = appointmentRepo;
         _connectionRepo = connectionRepo;
         _providerFactory = providerFactory;
         _clientRepo = clientRepo;
         _unitOfWork = unitOfWork;
+        _waitlistNotifier = waitlistNotifier;
     }
 
     public async Task<AppointmentResponseDto?> ExecuteAsync(AppointmentCancelDto dto, CancellationToken ct = default)
@@ -107,6 +111,21 @@ public class CancelAppointmentUseCase
         // respuesta del asistente (un único mensaje). El adaptador requiere el token/phone
         // del tenant, que solo está completo en el flujo del webhook; en la API no aplica.
 
+        // CRM: refrescar estado/próxima cita del cliente tras cambiar su cita.
+        await RefreshClientAsync(appointment.IdClient, ct);
+
+        // P1 Lista de espera (fast path): el cupo liberado puede matchear una entrada en
+        // espera. Se dispara aquí para no esperar ≤5 min al job periódico. No-fatal: si el
+        // barrido falla, el job lo reintenta.
+        try
+        {
+            await _waitlistNotifier.ScanAndNotifyAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            System.Console.WriteLine($"[CancelAppointment] Error notificando lista de espera: {ex.Message}");
+        }
+
         return new AppointmentResponseDto
         {
             Id = appointment.IdAppointment,
@@ -116,5 +135,16 @@ public class CancelAppointmentUseCase
             FechaFin = appointment.FechaFin,
             Status = appointment.Estado
         };
+    }
+
+    /// <summary>Refresca el estado y la próxima cita del cliente a partir de su historial (CRM).</summary>
+    private async Task RefreshClientAsync(Guid clientId, CancellationToken ct)
+    {
+        var client = await _clientRepo.GetByIdAsync(clientId, ct);
+        if (client == null) return;
+        var citas = await _appointmentRepo.GetByClientIdAsync(client.IdClient, ct);
+        ClientStateCalculator.ApplyDerivedState(client, citas, DateTime.UtcNow);
+        await _clientRepo.UpdateAsync(client, ct);
+        await _unitOfWork.SaveChangesAsync(ct);
     }
 }

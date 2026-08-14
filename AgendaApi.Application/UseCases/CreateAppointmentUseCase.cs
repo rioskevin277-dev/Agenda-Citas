@@ -1,6 +1,7 @@
 using AgendaApi.Application.DTOs;
 using AgendaApi.Domain.Entities;
 using AgendaApi.Domain.Ports;
+using AgendaApi.Domain.Services;
 
 namespace AgendaApi.Application.UseCases;
 
@@ -173,6 +174,9 @@ public class CreateAppointmentUseCase
         appointment = await _appointmentRepo.CreateAsync(appointment, ct);
         await _unitOfWork.SaveChangesAsync(ct);
 
+        // CRM: refrescar estado/próxima cita del cliente tras agendar su cita.
+        await RefreshClientAsync(client.IdClient, ct);
+
         // Send confirmation via WhatsApp
         try
         {
@@ -189,6 +193,17 @@ public class CreateAppointmentUseCase
         }
 
         return MapToDto(appointment, client.Nombre, serviceType.Nombre, professional?.Nombre);
+    }
+
+    /// <summary>Refresca el estado y la próxima cita del cliente a partir de su historial (CRM).</summary>
+    private async Task RefreshClientAsync(Guid clientId, CancellationToken ct)
+    {
+        var client = await _clientRepo.GetByIdAsync(clientId, ct);
+        if (client == null) return;
+        var citas = await _appointmentRepo.GetByClientIdAsync(client.IdClient, ct);
+        ClientStateCalculator.ApplyDerivedState(client, citas, DateTime.UtcNow);
+        await _clientRepo.UpdateAsync(client, ct);
+        await _unitOfWork.SaveChangesAsync(ct);
     }
 
     private static AppointmentResponseDto MapToDto(Appointment a, string? clientName, string? serviceName, string? professionalName = null)

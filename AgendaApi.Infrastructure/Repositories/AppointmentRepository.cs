@@ -31,6 +31,8 @@ public class AppointmentRepository : IAppointmentRepository
     public async Task<List<Appointment>> GetByClientIdAsync(Guid clientId, CancellationToken ct = default)
         => await _context.Appointments
             .Where(a => a.IdClient == clientId)
+            .Include(a => a.ServiceType)
+            .Include(a => a.Professional)
             .OrderByDescending(a => a.FechaInicio)
             .ToListAsync(ct);
 

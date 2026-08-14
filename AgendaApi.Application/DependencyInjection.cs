@@ -24,11 +24,14 @@ public static class DependencyInjection
         services.AddScoped<ListAppointmentsUseCase>();
         services.AddScoped<RenewCalendarSubscriptionsUseCase>();
         services.AddScoped<RepairExternalCalendarSyncUseCase>();
+        services.AddScoped<WaitlistNotificationUseCase>();
+        services.AddScoped<IWaitlistNotifier>(sp => sp.GetRequiredService<WaitlistNotificationUseCase>());
 
         // Background services
         services.AddHostedService<ReminderBackgroundService>();
         services.AddHostedService<SubscriptionRenewalService>();
         services.AddHostedService<ExternalSyncRepairBackgroundService>();
+        services.AddHostedService<WaitlistNotificationBackgroundService>();
 
         return services;
     }

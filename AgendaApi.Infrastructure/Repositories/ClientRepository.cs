@@ -32,4 +32,15 @@ public class ClientRepository : IClientRepository
         _context.Entry(client).State = EntityState.Modified;
         return Task.CompletedTask;
     }
+
+    public async Task<List<Client>> GetByTenantIdAsync(Guid tenantId, string? query = null, CancellationToken ct = default)
+    {
+        var q = _context.Clients.Where(c => c.IdTenant == tenantId);
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            var like = query.Trim();
+            q = q.Where(c => c.Nombre != null && c.Nombre.Contains(like) || c.WhatsApp.Contains(like));
+        }
+        return await q.OrderBy(c => c.Nombre ?? c.WhatsApp).ToListAsync(ct);
+    }
 }

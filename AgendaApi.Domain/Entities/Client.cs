@@ -38,11 +38,25 @@ public class Client
     [Column("activo")]
     public bool Activo { get; set; } = true;
 
-    [Column("fecha_creacion")]
-    public DateTime FechaCreacion { get; set; } = DateTime.UtcNow;
+    [Column("estado")]
+    [StringLength(20)]
+    public string Estado { get; set; } = "nuevo"; // nuevo, frecuente, inactivo, no_show
+
+    [Column("tags")]
+    [StringLength(500)]
+    public string? Tags { get; set; } // JSON o lista separada por comas
 
     [Column("ultima_interaccion")]
     public DateTime? UltimaInteraccion { get; set; }
+
+    [Column("proxima_cita")]
+    public DateTime? ProximaCita { get; set; }
+
+    [Column("fecha_creacion")]
+    public DateTime FechaCreacion { get; set; } = DateTime.UtcNow;
+
+    [Column("fecha_actualizacion")]
+    public DateTime FechaActualizacion { get; set; } = DateTime.UtcNow;
 
     // Navigation
     [ForeignKey(nameof(IdTenant))]

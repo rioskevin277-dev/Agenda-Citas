@@ -7,7 +7,7 @@ namespace AgendaApi.Infrastructure.Services;
 /// Estado estructurado por conversación (misma clave tenantId:phone que la memoria de
 /// conversación), separado del historial. En memoria con expiración de 24h. Guarda:
 /// - la reserva que el cliente dejó a medio agendar (para retomarla, P3)
-/// - si la conversación ya fue escalada a un humano (para no repetir avisos, P2)
+/// El estado del handoff a humano NO vive acá: pasó a la tabla handoffs (durable, ver HandoffService).
 /// </summary>
 public class ConversationStateService
 {
@@ -33,17 +33,6 @@ public class ConversationStateService
         Store(key, entry);
     }
 
-    public bool IsEscalated(string key)
-        => GetFresh(key)?.Escalated == true;
-
-    public void MarkEscalated(string key)
-    {
-        var entry = GetFresh(key) ?? new Entry();
-        entry.Escalated = true;
-        entry.LastActivity = DateTime.UtcNow;
-        _store[key] = entry;
-    }
-
     private Entry? GetFresh(string key)
     {
         if (!_store.TryGetValue(key, out var entry)) return null;
@@ -65,7 +54,6 @@ public class ConversationStateService
     private class Entry
     {
         public PendingBooking? PendingBooking { get; set; }
-        public bool Escalated { get; set; }
         public DateTime LastActivity { get; set; } = DateTime.UtcNow;
     }
 }

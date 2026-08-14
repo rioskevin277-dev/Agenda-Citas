@@ -15,6 +15,7 @@ public class CancelAppointmentUseCaseTests
     private readonly Mock<IClientRepository> _clientRepo = new();
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
     private readonly Mock<ICalendarProvider> _calendarProvider = new();
+    private readonly Mock<IWaitlistNotifier> _waitlistNotifier = new();
 
     private readonly CancelAppointmentUseCase _useCase;
 
@@ -25,7 +26,8 @@ public class CancelAppointmentUseCaseTests
             _connectionRepo.Object,
             _providerFactory.Object,
             _clientRepo.Object,
-            _unitOfWork.Object);
+            _unitOfWork.Object,
+            _waitlistNotifier.Object);
     }
 
     [Fact]

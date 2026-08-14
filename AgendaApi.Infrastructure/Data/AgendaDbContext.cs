@@ -17,6 +17,9 @@ public class AgendaDbContext : DbContext
     public DbSet<Client> Clients => Set<Client>();
     public DbSet<Appointment> Appointments => Set<Appointment>();
     public DbSet<ReminderLog> ReminderLogs => Set<ReminderLog>();
+    public DbSet<Handoff> Handoffs => Set<Handoff>();
+    public DbSet<ConversationMessage> ConversationMessages => Set<ConversationMessage>();
+    public DbSet<WaitlistEntry> WaitlistEntries => Set<WaitlistEntry>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -170,8 +173,11 @@ public class AgendaDbContext : DbContext
             entity.Property(e => e.Nombre).HasMaxLength(150);
             entity.Property(e => e.Email).HasMaxLength(150);
             entity.Property(e => e.Notas).HasMaxLength(500);
+            entity.Property(e => e.Estado).IsRequired().HasMaxLength(20).HasDefaultValue("nuevo");
+            entity.Property(e => e.Tags).HasMaxLength(500);
             entity.Property(e => e.Activo).HasDefaultValue(true);
             entity.Property(e => e.FechaCreacion).HasDefaultValueSql("GETUTCDATE()");
+            entity.Property(e => e.FechaActualizacion).HasDefaultValueSql("GETUTCDATE()");
             entity.HasIndex(e => new { e.IdTenant, e.WhatsApp }).IsUnique();
         });
 
@@ -227,6 +233,64 @@ public class AgendaDbContext : DbContext
             entity.HasIndex(e => new { e.IdAppointment, e.Etapa });
             entity.HasIndex(e => e.WamId);
             entity.HasIndex(e => e.IdTenant);
+        });
+
+        // --- Handoff (escalado a humano) ---
+        modelBuilder.Entity<Handoff>(entity =>
+        {
+            entity.ToTable("handoffs");
+            entity.HasKey(e => e.IdHandoff);
+            entity.Property(e => e.PhoneCliente).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.Motivo).HasMaxLength(1000);
+            // Se guarda como string ('Normal' | 'HumanPending' | 'HumanActive' | 'AiResumed').
+            entity.Property(e => e.Estado).HasConversion<string>().HasMaxLength(20);
+            entity.Property(e => e.FechaCreacion).HasDefaultValueSql("GETUTCDATE()");
+            entity.Property(e => e.FechaActualizacion).HasDefaultValueSql("GETUTCDATE()");
+
+            // Cola del asesor: busqueda por (tenant, cliente) para dedup/gate.
+            entity.HasIndex(e => new { e.IdTenant, e.PhoneCliente });
+            entity.HasIndex(e => e.Estado);
+        });
+
+        // --- ConversationMessage (historial durable de conversaciones) ---
+        modelBuilder.Entity<ConversationMessage>(entity =>
+        {
+            entity.ToTable("conversation_messages");
+            entity.HasKey(e => e.IdConversationMessage);
+            entity.Property(e => e.PhoneCliente).IsRequired().HasMaxLength(20);
+            entity.Property(e => e.Role).IsRequired().HasMaxLength(20).HasDefaultValue("user");
+            entity.Property(e => e.Content).HasMaxLength(4000);
+            entity.Property(e => e.FechaCreacion).HasDefaultValueSql("GETUTCDATE()");
+            entity.HasIndex(e => new { e.IdTenant, e.PhoneCliente, e.FechaCreacion });
+        });
+
+        // --- WaitlistEntry (lista de espera) ---
+        modelBuilder.Entity<WaitlistEntry>(entity =>
+        {
+            entity.ToTable("waitlist_entries");
+            entity.HasKey(e => e.IdWaitlistEntry);
+            entity.Property(e => e.Estado).IsRequired().HasMaxLength(20).HasDefaultValue("active");
+            entity.Property(e => e.FechaCreacion).HasDefaultValueSql("GETUTCDATE()");
+            entity.Property(e => e.FechaActualizacion).HasDefaultValueSql("GETUTCDATE()");
+
+            entity.HasOne(e => e.Client)
+                  .WithMany()
+                  .HasForeignKey(e => e.IdClient)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.ServiceType)
+                  .WithMany()
+                  .HasForeignKey(e => e.IdServiceType)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.Professional)
+                  .WithMany()
+                  .HasForeignKey(e => e.IdProfessional)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            // Cola FIFO por servicio/profesional + barrido global del job.
+            entity.HasIndex(e => new { e.IdTenant, e.Estado });
+            entity.HasIndex(e => new { e.IdTenant, e.IdServiceType, e.IdProfessional, e.Estado });
         });
     }
 }

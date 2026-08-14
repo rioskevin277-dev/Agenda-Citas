@@ -172,6 +172,18 @@ public class MessageBufferService : BackgroundService
             var tenantId = lastMsg.TenantId;
             var clientName = lastMsg.FromName;
 
+            // Canal del asesor humano: si el remitente es el dueño configurado, su mensaje
+            // responde a una conversación escalada (se reenvía al cliente o se cierra con FIN);
+            // no se lo pasa al AI.
+            var handoffService = scope.ServiceProvider.GetRequiredService<HandoffService>();
+            var ownerResult = await handoffService.HandleOwnerReplyAsync(tenantId, from, fullContent, ct);
+            if (ownerResult != HandoffService.OwnerReplyResult.NotOwner)
+            {
+                _logger.LogInformation("[Buffer] Mensaje del asesor procesado para {Tenant}: {Result}",
+                    tenantId, ownerResult);
+                return;
+            }
+
             await orchestrator.ProcessMessageAsync(
                 from,
                 fullContent,
