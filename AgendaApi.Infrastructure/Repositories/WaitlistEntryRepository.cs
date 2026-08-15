@@ -34,6 +34,10 @@ public class WaitlistEntryRepository : IWaitlistEntryRepository
                                       && w.IdServiceType == serviceTypeId
                                       && w.Estado == "active", ct);
 
+    public async Task<int> GetFulfilledByTenantAsync(Guid tenantId, CancellationToken ct = default)
+        => await _context.WaitlistEntries
+            .CountAsync(w => w.IdTenant == tenantId && w.Estado == "fulfilled", ct);
+
     public async Task<WaitlistEntry> CreateAsync(WaitlistEntry entry, CancellationToken ct = default)
     {
         await _context.WaitlistEntries.AddAsync(entry, ct);

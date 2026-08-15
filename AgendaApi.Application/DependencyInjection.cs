@@ -26,6 +26,7 @@ public static class DependencyInjection
         services.AddScoped<RepairExternalCalendarSyncUseCase>();
         services.AddScoped<WaitlistNotificationUseCase>();
         services.AddScoped<IWaitlistNotifier>(sp => sp.GetRequiredService<WaitlistNotificationUseCase>());
+        services.AddScoped<GetDashboardStatsUseCase>();
 
         // Background services
         services.AddHostedService<ReminderBackgroundService>();

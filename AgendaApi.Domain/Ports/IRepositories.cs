@@ -197,6 +197,10 @@ public interface IWaitlistEntryRepository
     /// <summary>Entrada activa del mismo cliente + servicio (primeros en la cola FIFO).</summary>
     Task<WaitlistEntry?> GetActiveByClientAndServiceAsync(Guid tenantId, Guid clientId, Guid serviceTypeId, CancellationToken ct = default);
 
+    /// <summary>Cuenta las entradas de lista de espera ya cumplidas (Estado == "fulfilled") del tenant
+    /// para el dashboard operativo (waitlist cumplidas).</summary>
+    Task<int> GetFulfilledByTenantAsync(Guid tenantId, CancellationToken ct = default);
+
     Task<WaitlistEntry> CreateAsync(WaitlistEntry entry, CancellationToken ct = default);
     Task UpdateAsync(WaitlistEntry entry, CancellationToken ct = default);
 }
