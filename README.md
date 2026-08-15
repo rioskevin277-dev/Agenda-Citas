@@ -1,6 +1,14 @@
 # AgendaApi — Asistente de Citas por WhatsApp (Multi-Tenant)
 
-Agente conversacional con IA que **agenda, consulta, reprograma, confirma y cancela citas** a través de **WhatsApp**, sincronizadas con **Google Calendar** o **Microsoft 365 (Outlook)** ([conexión](#-conectar-microsoft-365)). Multi-tenant: un mismo sistema sirve a varios negocios, cada uno con su propio calendario, servicios y horarios.
+Agente conversacional con IA que **agenda, consulta, reprograma, confirma y cancela citas** a través
+de **WhatsApp**, sincronizadas con **Google Calendar** o **Microsoft 365 (Outlook)**
+([conexión](#-conectar-microsoft-365)). Multi-tenant: un mismo sistema sirve a varios negocios,
+cada uno con su propio calendario, servicios y horarios.
+
+Además del bot, el sistema incluye un **CRM del dueño** (perfil + historial + conversaciones de cada
+cliente), **recordatorios automáticos multi-etapa**, **lista de espera** (FIFO con aviso al liberarse
+un cupo), **múltiples profesionales** con su propio horario y cartera de servicios, **handoff a un
+asesor humano** y un **dashboard operativo** con los KPIs del negocio.
 
 ---
 
@@ -51,6 +59,7 @@ Cada mensaje de WhatsApp pasa por un **orquestador de IA** (`ChatOrchestratorSer
 | `confirm_appointment` | Marca una cita como confirmada (responde al CONFIRMAR) |
 | `reschedule_appointment` | Reprograma a otra fecha/hora (identifica por WhatsApp o ID) |
 | `list_appointments` | Lista las citas del cliente |
+| `add_to_waitlist` | Apunta al cliente a la lista de espera de un servicio (si no hay cupo) |
 
 > **Importante**: la IA **solo agenda servicios que existen** en tu negocio. Si un cliente pide algo que no está en la lista, el bot responde que no está disponible en vez de inventar.
 
@@ -235,15 +244,23 @@ Con la API arriba (`dotnet run` o `scripts/start-production.ps1`):
 | Tabla | Guarda |
 |---|---|
 | `tenants` | Cada negocio/usuario. **Aquí se configura todo**: `calendar_provider`, `whatsapp_phone_number_id`, horarios |
-| `clients` | **Información del cliente**: nombre, WhatsApp, email. Se crea/actualiza al primera vez que escribe |
+| `clients` | **Información del cliente**: nombre, WhatsApp, email + perfil CRM: `estado` (`nuevo/frecuente/inactivo/no_show/vip/blacklist`), `tags`, `proxima_cita`. Se crea/actualiza al primera vez que escribe |
 | `service_types` | Servicios del negocio (Consulta General, Procedimiento Menor…) con duración, buffer y precio |
-| `availability_rules` | **Horarios de atención** por día de la semana (ej. Lun–Vie 09:00–18:00) |
-| `appointments` | Las citas: fecha inicio/fin, estado (`pending/confirmed/cancelled/…`), `external_event_id` (ID del evento en Google), recordatorio |
-| `calendar_connections` | Tokens OAuth de cada cliente+calendario, **cifrados (AES-256)** |
+| `professionals` | **Profesionales** del negocio: nombre, canal por profesional, horario personal |
+| `professional_services` | Cartera: qué **servicios** presta **cada profesional** |
+| `availability_rules` | **Horarios de atención** por día de la semana (ej. Lun–Vie 09:00–18:00), por negocio o por profesional |
 | `availability_exceptions` | Excepciones puntuales de disponibilidad |
+| `appointments` | Las citas: fecha inicio/fin, estado (`pending/confirmed/cancelled/…`), `external_event_id` (ID del evento en calendario), recordatorio |
+| `calendar_connections` | Tokens OAuth de cada cliente+calendario, **cifrados (AES-256)** |
+| `reminder_logs` | Registro de cada recordatorio: etapa, estado (`sent/delivered/failed`), reintentos, `wamid` |
+| `handoffs` | **Tickets de handoff** a asesor humano: tenant, teléfono, motivo, contexto del turno, estado |
+| `conversation_messages` | **Historial durable** de los mensajes de conversación por cliente (CRM) |
+| `waitlist_entries` | **Lista de espera** FIFO por servicio/profesional: entrada activa, cumplida, expirada (7 días) |
 
 ### Datos de ejemplo (seed)
-`scripts/seed-tenant-data.sql` llena `service_types` y `availability_rules` del tenant de prueba. Ejecútalo con `sqlcmd` contra el contenedor de SQL Server (ver "Acceso a la base" en `scripts/start-production.ps1`).
+`scripts/seed-tenant-data.sql` llena `service_types`, `availability_rules` y los **profesionales** del
+tenant de prueba (Dra. María con horario personal lun–vie 09–17 y Dr. Carlos, ambos con su cartera de
+los 3 servicios). Ejecútalo con `sqlcmd` contra el contenedor de SQL Server (ver "Acceso a la base" en `scripts/start-production.ps1`).
 
 ---
 
@@ -303,19 +320,32 @@ cloudflared tunnel run agenda-api
 
 ## 🔌 API (endpoints)
 
+Todas las rutas de negocio van bajo `api/v1` y requieren **JWT Bearer** (`[Authorize]`); el tenant se
+resuelve del claim `IdTenant`.
+
 | Método | Ruta | Descripción |
 |---|---|---|
-| `GET` | `/health` | Health check |
-| `POST` | `/api/tenants` | Crear tenant |
-| `GET` | `/api/tenants` | Listar tenants |
-| `POST` | `/api/tenants/{id}/calendar-connection` | Conectar calendario |
-| `GET` | `/api/appointments/availability` | Ver disponibilidad |
-| `POST` | `/api/appointments` | Crear cita |
-| `PUT` | `/api/appointments/{id}/reschedule` | Reprogramar |
-| `POST` | `/api/appointments/{id}/cancel` | Cancelar |
-| `GET/POST` | `/api/appointments` | Webhook WhatsApp (`/api/v1/webhook`) |
-| `GET` | `/api/v1/oauth/google/authorize` | Iniciar OAuth Google |
-| `GET` | `/api/v1/oauth/google/callback` | Callback OAuth Google |
+| `GET` | `/health` | Health check (público) |
+| `GET/POST` | `/api/v1/webhook` | Webhook **WhatsApp** (GET = verificación Meta, POST = mensajes entrantes) |
+| `POST` | `/api/v1/webhook/calendar` | Webhook **calendario** (suscripción Google/Microsoft, cambios a mano) |
+| `GET` | `/api/v1/tenants` | Listar tenants |
+| `POST` | `/api/v1/tenants` | Crear tenant |
+| `POST` | `/api/v1/tenants/{id}/calendar-connection` | Conectar calendario |
+| `GET/POST` | `/api/v1/tenants/{id}/service-types` | Servicios del tenant |
+| `GET/POST` | `/api/v1/tenants/{id}/professionals` | Profesionales del tenant |
+| `POST` | `/api/v1/tenants/{id}/professionals/{pid}/services` | Asignar servicios a un profesional |
+| `GET` | `/api/v1/clients?q=` | **CRM**: listar clientes (filtro por nombre/WhatsApp) |
+| `GET` | `/api/v1/clients/{id}` | **CRM**: detalle (perfil + historial + conversaciones) |
+| `PUT` | `/api/v1/clients/{id}` | **CRM**: editar perfil (estado/tags/notas) |
+| `GET` | `/api/v1/appointments/availability` | Ver disponibilidad |
+| `POST` | `/api/v1/appointments` | Crear cita |
+| `GET` | `/api/v1/appointments` | Listar citas |
+| `GET` | `/api/v1/appointments/{id}` | Detalle de una cita |
+| `POST` | `/api/v1/appointments/{id}/cancel` | Cancelar |
+| `PUT` | `/api/v1/appointments/{id}/reschedule` | Reprogramar |
+| `GET` | `/api/v1/dashboard/summary` | **Dashboard**: KPIs operativos (`fechaDesde/fechaHasta` opcionales) |
+| `GET` | `/api/v1/oauth/microsoft/authorize` · `/callback` | OAuth **Microsoft 365** |
+| `GET` | `/api/v1/oauth/google/authorize` · `/callback` | OAuth **Google Calendar** |
 
 Documentación interactiva completa en `/swagger`.
 
@@ -370,7 +400,7 @@ AgendaApi.sln
 ├── AgendaApi.Application/     # Casos de uso + DTOs
 ├── AgendaApi.Infrastructure/  # Adaptadores (EF Core, Google, WhatsApp, AI)
 ├── AgendaApi.Api/             # Host web (controllers, OAuth, webhook)
-├── AgendaApi.Tests/           # Tests unitarios (38 tests)
+├── AgendaApi.Tests/           # Tests unitarios (139 tests)
 ├── deploy/                    # Scripts de deploy
 ├── scripts/                   # Scripts (start, seed, test webhook/full flow)
 ├── docker-compose.yml         # Orquestación (sqlserver + api)
@@ -386,10 +416,11 @@ AgendaApi.sln
 
 ```bash
 dotnet test AgendaApi.sln
-# 38/38 superados
+# 139/139 superados
 ```
 
-Cubre casos de uso clave: disponibilidad, creación/cancelación/reprogramación/confirmación de citas.
+Cubre casos de uso clave: disponibilidad, creación/cancelación/reprogramación/confirmación de citas,
+lista de espera, recordatorios multi-etapa, handoff, clientes y dashboard.
 
 ---
 
