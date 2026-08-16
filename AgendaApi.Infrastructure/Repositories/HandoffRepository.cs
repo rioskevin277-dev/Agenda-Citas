@@ -46,6 +46,20 @@ public class HandoffRepository : IHandoffRepository
             .OrderBy(h => h.FechaCreacion)
             .ToListAsync(ct);
 
+    /// <summary>
+    /// Tickets abiertos (HumanPending o HumanActive) sin actividad desde hace más que el corte
+    /// dado. Un handoff "activo" de verdad se actualiza (FechaActualizacion) en cada respuesta
+    /// del asesor, así que un ticket abierto y sin tocar desde hace mucho es un ticket quedado
+    /// (p. ej. de una prueba) que congela al AI; el uso case los devuelve a AiResumed.
+    /// </summary>
+    public async Task<List<Handoff>> GetStaleOpenAsync(DateTime cutoffUtc, CancellationToken ct = default)
+        => await _context.Handoffs
+            .Where(h =>
+                (h.Estado == HandoffState.HumanPending || h.Estado == HandoffState.HumanActive)
+                && h.FechaActualizacion < cutoffUtc)
+            .OrderBy(h => h.FechaActualizacion)
+            .ToListAsync(ct);
+
     public async Task AddAsync(Handoff handoff, CancellationToken ct = default)
         => await _context.Handoffs.AddAsync(handoff, ct);
 

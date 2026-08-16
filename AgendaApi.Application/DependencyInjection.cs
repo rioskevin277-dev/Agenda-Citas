@@ -27,12 +27,14 @@ public static class DependencyInjection
         services.AddScoped<WaitlistNotificationUseCase>();
         services.AddScoped<IWaitlistNotifier>(sp => sp.GetRequiredService<WaitlistNotificationUseCase>());
         services.AddScoped<GetDashboardStatsUseCase>();
+        services.AddScoped<HandoffExpirationUseCase>();
 
         // Background services
         services.AddHostedService<ReminderBackgroundService>();
         services.AddHostedService<SubscriptionRenewalService>();
         services.AddHostedService<ExternalSyncRepairBackgroundService>();
         services.AddHostedService<WaitlistNotificationBackgroundService>();
+        services.AddHostedService<HandoffExpirationBackgroundService>();
 
         return services;
     }

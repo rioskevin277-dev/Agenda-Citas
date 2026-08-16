@@ -166,6 +166,9 @@ public interface IHandoffRepository
     /// <summary>Cola de handoffs abiertos del tenant (los más antiguos primero).</summary>
     Task<List<Handoff>> GetOpenByTenantAsync(Guid tenantId, CancellationToken ct = default);
 
+    /// <summary>Tickets abiertos sin actividad desde antes del corte (p. ej. de una prueba quedada).</summary>
+    Task<List<Handoff>> GetStaleOpenAsync(DateTime cutoffUtc, CancellationToken ct = default);
+
     Task AddAsync(Handoff handoff, CancellationToken ct = default);
     Task UpdateAsync(Handoff handoff, CancellationToken ct = default);
 }
