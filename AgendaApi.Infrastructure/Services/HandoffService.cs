@@ -21,6 +21,7 @@ public class HandoffService
     private readonly IMessagingProvider _messaging;
     private readonly ITenantRepository _tenantRepo;
     private readonly ITenantContext _tenantContext;
+    private readonly IConversationHistoryRepository _historyRepo;
     private readonly ILogger<HandoffService> _logger;
 
     public HandoffService(
@@ -29,6 +30,7 @@ public class HandoffService
         IMessagingProvider messaging,
         ITenantRepository tenantRepo,
         ITenantContext tenantContext,
+        IConversationHistoryRepository historyRepo,
         ILogger<HandoffService> logger)
     {
         _handoffRepo = handoffRepo;
@@ -36,6 +38,7 @@ public class HandoffService
         _messaging = messaging;
         _tenantRepo = tenantRepo;
         _tenantContext = tenantContext;
+        _historyRepo = historyRepo;
         _logger = logger;
     }
 
@@ -179,11 +182,14 @@ public class HandoffService
             await _unitOfWork.SaveChangesAsync(ct);
             _logger.LogInformation("[Handoff] Ticket {Id} cerrado por el asesor (control vuelve al AI)", handoff.IdHandoff);
 
+            var cierreText = "Tu asesor finalizó la atención. El asistente virtual quedó disponible nuevamente. 😊";
             await SendToClientAsync(
                 tenantId,
                 handoff.PhoneCliente,
-                "Tu asesor finalizó la atención. El asistente virtual quedó disponible nuevamente. 😊",
+                cierreText,
                 ct);
+            // Cierra el ciclo del CRM: el aviso de cierre entra en el historial del cliente.
+            await PersistAdvisorMessageAsync(tenantId, handoff.PhoneCliente, "assistant", cierreText, ct);
             return OwnerReplyResult.ChatClosed;
         }
 
@@ -196,6 +202,9 @@ public class HandoffService
 
         _logger.LogInformation("[Handoff] Respuesta del asesor reenviada al cliente {Phone}", handoff.PhoneCliente);
         await SendToClientAsync(tenantId, handoff.PhoneCliente, text, ct);
+        // Cierra el ciclo del CRM: la respuesta del asesor entra en el historial del cliente
+        // con el rol "owner" (asesor humano) para distinguirla de user/assistant.
+        await PersistAdvisorMessageAsync(tenantId, handoff.PhoneCliente, "owner", text, ct);
         return OwnerReplyResult.Forwarded;
     }
 
@@ -212,5 +221,40 @@ public class HandoffService
                                ?? "",
             phoneNumberId: tenant.WhatsAppPhoneNumberId ?? "");
         await _messaging.SendTextAsync(phone, text, ct);
+    }
+
+    /// <summary>
+    /// Persiste un mensaje del canal del asesor en el historial durable del cliente (pilar
+    /// "Conversaciones" del CRM), keyed por el teléfono del CLIENTE para que aparezca en su
+    /// transcripción. El rol distingue el asesor humano ("owner") del resto. Falla silencioso:
+    /// un problema al guardar el historial nunca debe romper el turno.
+    /// </summary>
+    private async Task PersistAdvisorMessageAsync(
+        Guid tenantId,
+        string phoneCliente,
+        string role,
+        string content,
+        CancellationToken ct)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(content)) return;
+            if (content.Length > 4000)
+                content = content[..4000];
+
+            await _historyRepo.AddAsync(new ConversationMessage
+            {
+                IdConversationMessage = Guid.NewGuid(),
+                IdTenant = tenantId,
+                PhoneCliente = phoneCliente,
+                Role = role,
+                Content = content
+            }, ct);
+            await _unitOfWork.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[Handoff] No se pudo persistir el mensaje del asesor de {Phone}", phoneCliente);
+        }
     }
 }

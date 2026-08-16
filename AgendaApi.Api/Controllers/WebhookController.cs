@@ -82,8 +82,8 @@ public class WebhookController : ControllerBase
                     msg.From,
                     msg.FromName,
                     msg.Content,
+                    msg.MediaId,
                     msg.MediaType,
-                    msg.MediaUrl,
                     msg.TenantId);
             }
 

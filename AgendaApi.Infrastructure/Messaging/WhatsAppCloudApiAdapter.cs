@@ -1,5 +1,6 @@
 using System.Net.Http;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using AgendaApi.Domain.Ports;
 using Microsoft.Extensions.Logging;
 
@@ -207,11 +208,12 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
 
         var accessToken = _tenantContext.WhatsAppAccessToken;
 
-        // Get media URL
-        var mediaUrl = $"https://graph.facebook.com/v18.0/{mediaId}";
         _httpClient.DefaultRequestHeaders.Clear();
         _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {accessToken}");
 
+        // Paso 1: nodo de media → { url, mime_type, ... }. Reutiliza el mismo _httpClient
+        // (no "new HttpClient()", que fuga sockets y no respeta la configuración del client).
+        var mediaUrl = $"https://graph.facebook.com/v18.0/{mediaId}";
         var mediaResponse = await _httpClient.GetAsync(mediaUrl, ct);
         mediaResponse.EnsureSuccessStatusCode();
         var mediaJson = await mediaResponse.Content.ReadAsStringAsync(ct);
@@ -220,10 +222,8 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
         if (string.IsNullOrWhiteSpace(mediaInfo?.Url))
             throw new InvalidOperationException($"No se pudo obtener URL del media {mediaId}");
 
-        // Download bytes
-        using var downloadClient = new HttpClient();
-        downloadClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {accessToken}");
-        return await downloadClient.GetByteArrayAsync(mediaInfo.Url, ct);
+        // Paso 2: descargar los bytes desde la URL firmada del lookaside.
+        return await _httpClient.GetByteArrayAsync(mediaInfo.Url, ct);
     }
 
     private static IncomingMessage? ParseSingleMessage(JsonElement message, string phoneNumberId, string nombre)
@@ -282,10 +282,21 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
         }
     }
 
+    /// <summary>
+    /// La API de metadatos de media de Graph devuelve snake_case. La deserialización
+    /// por defecto de System.Text.Json es case-sensitive, así que los rutores deben
+    /// declarar el JSON name explícito (url ≠ Url): sin esto, Url quedaría null y la
+    /// descarga fallaría con "No se pudo obtener URL del media".
+    /// </summary>
     private class MediaInfo
     {
+        [JsonPropertyName("url")]
         public string? Url { get; set; }
+
+        [JsonPropertyName("mime_type")]
         public string? MimeType { get; set; }
+
+        [JsonPropertyName("file_size")]
         public long? FileSize { get; set; }
     }
 }

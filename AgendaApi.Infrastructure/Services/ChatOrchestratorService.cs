@@ -82,6 +82,42 @@ public class ChatOrchestratorService
             return;
         }
 
+        // FAST-PATH DE CONFIRMACIÓN: cuando el cliente responde un token claramente de
+        // confirmación (CONFIRMAR / CONFIRMO / "si, confirmo"...), confirmamos la próxima cita
+        // PENDIENTE de forma directa y determinista, sin depender de que el modelo elija la
+        // herramienta confirm_appointment. En el tier gratuito el modelo a veces contesta en
+        // texto "confirma CONFIRMAR" en vez de ejecutar la herramienta, lo que entraba en un
+        // loop: el cliente confirma y le vuelven a pedir que confirme. Este fast-path lo evita.
+        if (IsConfirmationIntent(messageContent))
+        {
+            var confirmed = await TryConfirmUpcomingAsync(services, tenantId, userPhone, ct);
+            if (confirmed != null)
+            {
+                string svcName = "tu cita";
+                try
+                {
+                    var svcRepo = services.GetRequiredService<IServiceTypeRepository>();
+                    svcName = (await svcRepo.GetByTenantIdAsync(tenantId, ct))
+                        .FirstOrDefault(s => s.IdServiceType == confirmed.IdServiceType)?.Nombre ?? "tu cita";
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "[Orchestrator] No se resolvió el servicio para el fast-path de confirmación");
+                }
+
+                var confirmText = $"✓ Cita confirmada: {svcName}\n📅 {confirmed.FechaInicio:dd/MM/yyyy} a las {confirmed.FechaInicio:HH:mm} hs. ¡Te esperamos!";
+                _conversationMemory.AddUser(conversationKey, messageContent);
+                await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "user", messageContent, ct);
+                await messaging.SendTextAsync(userPhone, confirmText);
+                _conversationMemory.AddAssistant(conversationKey, confirmText);
+                await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", confirmText, ct);
+                _logger.LogInformation("[Orchestrator] Cita {Id} confirmada por fast-path CONFIRMAR para {Phone}",
+                    confirmed.IdAppointment, userPhone);
+                return;
+            }
+            // Sin cita pendiente: dejamos que el AI explique (el fast-path no debe romper el turno).
+        }
+
         // Cargar los tipos de servicio reales del tenant para que la IA solo pueda
         // sugerir/agendar servicios que de verdad existen (evita nombres inventados).
         var serviceTypeRepo = services.GetRequiredService<IServiceTypeRepository>();
@@ -122,6 +158,13 @@ public class ChatOrchestratorService
         // Acciones del AI en este turno en texto legible; se incluyen como contexto
         // estructurado en el aviso al asesor si el turno termina en escalado.
         var accionesPrevias = new List<string>();
+
+        // Rastreo de churn de disponibilidad: si el turno se gasta solo probando
+        // check_availability y nunca logra crear la cita (p. ej. el negocio está cerrado
+        // el día pedido y el modelo sigue cambiando fecha/servicio), la situación es un
+        // caso comercial normal — informar al cliente, NO escalar a humano (que congela la IA).
+        bool sawAvailabilityProbe = false;
+        bool sawCreateAppointment = false;
 
         for (int iteration = 0; iteration < MaxToolIterations; iteration++)
         {
@@ -193,6 +236,9 @@ public class ChatOrchestratorService
                 _logger.LogInformation("[Orchestrator] Ejecutando tool: {Name}({Args})",
                     toolCall.Name, toolCall.Arguments);
 
+                if (toolCall.Name == "check_availability") sawAvailabilityProbe = true;
+                if (toolCall.Name == "create_appointment") sawCreateAppointment = true;
+
                 var toolResult = await ExecuteToolAsync(toolCall.Name, toolCall.Arguments, services, tenantId, userPhone, clientName, accionesPrevias, ct);
                 accionesPrevias.Add(ToolActionSummarizer.Summarize(toolCall.Name, toolResult));
 
@@ -210,12 +256,91 @@ public class ChatOrchestratorService
         }
 
         _logger.LogWarning("[Orchestrator] Maximo de iteraciones alcanzado ({Max})", MaxToolIterations);
+
+        // Churn de disponibilidad: el turno solo probó check_availability y nunca creó la cita
+        // (p. ej. el día pedido el negocio está cerrado y el modelo siguió sondeando otras
+        // fechas/servicios). Es un caso comercial normal, no una falla de infraestructura:
+        // respondemos la situación en lugar de escalar a humano (que congelaría la IA).
+        if (sawAvailabilityProbe && !sawCreateAppointment)
+        {
+            const string noSlotsText = "No encontré un horario disponible para la fecha que me pediste. 😕 " +
+                "¿Quieres que revise otro día u horario, o prefieres que te agregue a la lista de espera " +
+                "del servicio y te aviso cuando se libere un cupo?";
+            _logger.LogInformation("[Orchestrator] Sin cupos (churn de disponibilidad): respondo sin escalar a humano");
+            await messaging.SendTextAsync(userPhone, noSlotsText);
+            _conversationMemory.AddAssistant(conversationKey, noSlotsText);
+            await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", noSlotsText, ct);
+            return;
+        }
+
         const string maxIterText = "Estoy procesando tu solicitud. Un asesor te contactara pronto para confirmar.";
         await EscalateToHumanAsync(services, tenantId, userPhone, clientName,
             "Se alcanzó el máximo de iteraciones AI sin resolver la solicitud del cliente.", accionesPrevias, ct);
         await messaging.SendTextAsync(userPhone, maxIterText);
         _conversationMemory.AddAssistant(conversationKey, maxIterText);
         await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", maxIterText, ct);
+    }
+
+    /// <summary>
+    /// Detecta una intención explícita de confirmación de cita (CONFIRMAR, CONFIRMO,
+    /// "si, confirmo"...). Evita falsos positivos con negaciones ("no confirmo").
+    /// </summary>
+    private static bool IsConfirmationIntent(string? content)
+    {
+        var n = content?.Trim().ToUpperInvariant() ?? "";
+        if (n.Length == 0 || n.StartsWith("NO", StringComparison.Ordinal))
+            return false;
+        return n.StartsWith("CONFIRM", StringComparison.Ordinal)
+            || (n.StartsWith("SI", StringComparison.Ordinal) && n.Contains("CONFIRM", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Confirma la próxima cita PENDIENTE futura del cliente (sin pasada). Devuelve la cita
+    /// confirmada, o null si no hay ninguna pendiente. Falla silencioso: un error aquí no
+    /// debe romper el turno (el AI entonces maneja el mensaje normalmente).
+    /// </summary>
+    private async Task<Domain.Entities.Appointment?> TryConfirmUpcomingAsync(
+        IServiceProvider services,
+        Guid tenantId,
+        string userPhone,
+        CancellationToken ct)
+    {
+        try
+        {
+            var clientRepo = services.GetRequiredService<IClientRepository>();
+            var appointmentRepo = services.GetRequiredService<IAppointmentRepository>();
+            var useCase = services.GetRequiredService<Application.UseCases.ConfirmAppointmentUseCase>();
+
+            var client = await clientRepo.GetByWhatsAppAsync(userPhone, tenantId, ct);
+            if (client == null)
+                return null;
+
+            // "Ahora" del negocio en hora local marcado como UTC (misma convención que el use case).
+            var businessNow = TimeZoneInfo.ConvertTimeFromUtc(
+                DateTime.UtcNow,
+                TimeZoneInfo.FindSystemTimeZoneById(Environment.GetEnvironmentVariable("Calendar__TimeZone") ?? "America/Bogota"));
+            var now = DateTime.SpecifyKind(businessNow, DateTimeKind.Utc);
+
+            var upcoming = (await appointmentRepo.GetByClientIdAsync(client.IdClient, ct))
+                .Where(a => a.FechaInicio >= now && a.Estado == "pending")
+                .OrderBy(a => a.FechaInicio)
+                .FirstOrDefault();
+            if (upcoming == null)
+                return null;
+
+            var dto = new Application.DTOs.AppointmentCancelDto
+            {
+                TenantId = tenantId,
+                AppointmentIdentifier = upcoming.IdAppointment.ToString()
+            };
+            var result = await useCase.ExecuteAsync(dto, ct);
+            return result != null ? upcoming : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Orchestrator] Fast-path de confirmación falló para {Phone}: {Msg}", userPhone, ex.Message);
+            return null;
+        }
     }
 
     private async Task<string> ExecuteToolAsync(
@@ -316,6 +441,7 @@ REGLAS IMPORTANTES:
 8.6 CONFIRMACION DE CITA: cuando crees una cita, queda PENDIENTE hasta que el cliente la confirme. Informale que debe confirmarla y pedile hacerlo. Cuando el cliente confirme (diga 'si', 'confirmo', 'confirmar' o acepte), usa confirm_appointment con su WhatsApp para confirmarla. Tras confirmar, termina el turno y no repitas la pregunta.
 8.7 ATENCION HUMANA: si el cliente pide hablar con una persona o asesor humano, presenta un reclamo, una urgencia, o necesita algo que no se puede resolver con las herramientas, usa request_human_attention con el motivo, informale que un asesor se comunicara pronto con el y termina el turno.
 8.8 LISTA DE ESPERA: si el cliente quiere un servicio pero NO hay disponibilidad (check_availability no devuelve cupos, o la fecha/hora que quiere esta ocupada o fuera del rango permitido), ofrecele agregarse a la lista de espera con add_to_waitlist (usa el nombre exacto del servicio que pidio). Si acepta, confirma el servicio y, si quiere, el rango de fechas (fecha_desde/fecha_hasta) y el profesional preferido (professional_name) — todos opcionales. Informale que se le avisara por WhatsApp cuando se libere un cupo y termina el turno. Si dice que solo queria probar fechas, no lo agregues.
+8.8a CUANDO NO HAY CUPOS, NO SONDEES EN LOOP: si check_availability devuelve 0 cupos para lo que pidio el cliente, NO vuelvas a llamar check_availability con otras fechas u otros servicios en busca de un hueco. Eso apaga el turno. En su lugar, con esa primera respuesta ya informale al cliente que no hay disponibilidad para lo pedido, pregunta si quiere otra FECha/horario o la LISTA DE ESPERA (regla 8.8), y termina el turno. Usa maximo UNA llamada de check_availability salvo que el cliente cambie explicitamente la fecha o el servicio que quiere.
 
 CLIENTE ACTUAL:
 " + senderIdentity + @"

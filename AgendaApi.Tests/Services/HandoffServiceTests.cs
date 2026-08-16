@@ -18,6 +18,7 @@ public class HandoffServiceTests
     private readonly Mock<IMessagingProvider> _messaging = new();
     private readonly Mock<ITenantRepository> _tenantRepo = new();
     private readonly Mock<ITenantContext> _tenantContext = new();
+    private readonly Mock<IConversationHistoryRepository> _history = new();
 
     public HandoffServiceTests()
     {
@@ -28,7 +29,7 @@ public class HandoffServiceTests
 
     private HandoffService CreateService()
         => new(_repo.Object, _unitOfWork.Object, _messaging.Object, _tenantRepo.Object, _tenantContext.Object,
-            NullLogger<HandoffService>.Instance);
+            _history.Object, NullLogger<HandoffService>.Instance);
 
     private static Handoff OpenHandoff(HandoffState estado = HandoffState.HumanPending) => new()
     {
@@ -133,6 +134,12 @@ public class HandoffServiceTests
         handoff.UltimoMensajeHumano.Should().Be("Sí, te reservo el horario");
         _repo.Verify(r => r.UpdateAsync(handoff, It.IsAny<CancellationToken>()), Times.Once);
         _messaging.Verify(m => m.SendTextAsync(ClientNumber, "Sí, te reservo el horario", It.IsAny<CancellationToken>()), Times.Once);
+        // El mensaje del asesor se persiste en el historial del cliente con rol "owner".
+        _history.Verify(h => h.AddAsync(It.Is<ConversationMessage>(m =>
+            m.IdTenant == TenantId
+            && m.PhoneCliente == ClientNumber
+            && m.Role == "owner"
+            && m.Content == "Sí, te reservo el horario"), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -151,6 +158,12 @@ public class HandoffServiceTests
         _messaging.Verify(m => m.SendTextAsync(ClientNumber,
             It.Is<string>(s => s.Contains("asistente virtual quedó disponible")),
             It.IsAny<CancellationToken>()), Times.Once);
+        // El aviso de cierre se persiste en el historial del cliente con rol "assistant".
+        _history.Verify(h => h.AddAsync(It.Is<ConversationMessage>(m =>
+            m.IdTenant == TenantId
+            && m.PhoneCliente == ClientNumber
+            && m.Role == "assistant"
+            && m.Content.Contains("asistente virtual quedó disponible")), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // --- Helpers estáticos ---

@@ -51,8 +51,8 @@ public class MessageBufferService : BackgroundService
         string from,
         string? fromName,
         string content,
+        string? mediaId,
         string? mediaType,
-        string? mediaUrl,
         Guid tenantId,
         CancellationToken ct = default)
     {
@@ -62,8 +62,8 @@ public class MessageBufferService : BackgroundService
             From = from,
             FromName = fromName,
             Content = content,
+            MediaId = mediaId,
             MediaType = mediaType,
-            MediaUrl = mediaUrl,
             TenantId = tenantId,
             ReceivedAt = DateTime.UtcNow
         };
@@ -163,14 +163,23 @@ public class MessageBufferService : BackgroundService
             using var scope = _scopeFactory.CreateScope();
             var orchestrator = scope.ServiceProvider.GetRequiredService<ChatOrchestratorService>();
 
-            // Concatenar mensajes del buffer en orden
-            var fullContent = string.Join("\n", buffer.Messages
-                .OrderBy(m => m.ReceivedAt)
-                .Select(m => m.Content));
-
             var lastMsg = buffer.Messages.Last();
             var tenantId = lastMsg.TenantId;
             var clientName = lastMsg.FromName;
+
+            // Transcripción de audios: si el cliente envió uno o más audios, se descargan,
+            // se transcriben (Groq Whisper) y el texto reemplaza el placeholder "[audio]"
+            // para que el flujo los trate como mensajes escritos.
+            var ordered = buffer.Messages.OrderBy(m => m.ReceivedAt).ToList();
+            foreach (var m in ordered.Where(m => IsAudio(m)))
+            {
+                var transcript = await TranscribeAudioAsync(scope, tenantId, m.MediaId, m.MediaType, ct);
+                if (!string.IsNullOrWhiteSpace(transcript))
+                    m.Content = transcript;
+            }
+
+            // Concatenar mensajes del buffer en orden
+            var fullContent = string.Join("\n", ordered.Select(m => m.Content));
 
             // Canal del asesor humano: si el remitente es el dueño configurado, su mensaje
             // responde a una conversación escalada (se reenvía al cliente o se cierra con FIN);
@@ -239,14 +248,75 @@ public class MessageBufferService : BackgroundService
         }
     }
 
+    /// <summary>¿Es un mensaje de audio (voz) descargable? Requiere MediaId (id del media en WhatsApp).</summary>
+    private static bool IsAudio(IncomingMessageEvent m)
+        => !string.IsNullOrWhiteSpace(m.MediaId)
+           && (m.MediaType?.StartsWith("audio", StringComparison.OrdinalIgnoreCase) ?? false);
+
+    /// <summary>
+    /// Descarga y transcribe un audio de WhatsApp. Fail-safe: si algo falla devuelve null
+    /// (el placeholder "[audio]" se conserva y el flujo responde igual sin romper el turno).
+    /// </summary>
+    private async Task<string?> TranscribeAudioAsync(
+        IServiceScope scope,
+        Guid tenantId,
+        string? mediaId,
+        string? mediaType,
+        CancellationToken ct)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(mediaId))
+                return null;
+
+            // La descarga exige el contexto de tenant (access token + phone id), igual que HandoffService.
+            var tenantRepo = scope.ServiceProvider.GetRequiredService<ITenantRepository>();
+            var tenantContext = scope.ServiceProvider.GetRequiredService<ITenantContext>();
+            var tenant = await tenantRepo.GetByIdAsync(tenantId, ct);
+            if (tenant == null)
+            {
+                _logger.LogInformation("[Buffer] Transcripción sin tenant {Tenant}", tenantId);
+                return null;
+            }
+            tenantContext.SetTenant(
+                tenantId,
+                calendarProvider: tenant.CalendarProvider ?? "google",
+                whatsAppAccessToken: Environment.GetEnvironmentVariable("WhatsApp__AccessToken")
+                                   ?? Environment.GetEnvironmentVariable("WHATSAPP_ACCESS_TOKEN")
+                                   ?? "",
+                phoneNumberId: tenant.WhatsAppPhoneNumberId ?? "");
+
+            var messaging = scope.ServiceProvider.GetRequiredService<IMessagingProvider>();
+            var stt = scope.ServiceProvider.GetRequiredService<ISpeechToTextProvider>();
+
+            var audioBytes = await messaging.DownloadMediaAsync(mediaId, ct);
+            if (audioBytes is not { Length: > 0 })
+                return null;
+
+            var text = await stt.TranscribeAsync(audioBytes, mediaType ?? "audio/ogg", ct);
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                _logger.LogInformation("[Buffer] Audio sin transcripción utilizable para tenant {Tenant}", tenantId);
+                return null;
+            }
+            _logger.LogInformation("[Buffer] Audio transcrito ({Chars} chars) para tenant {Tenant}", text.Length, tenantId);
+            return text;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Buffer] No se pudo transcribir el audio de {Tenant} (fallback a [audio])", tenantId);
+            return null;
+        }
+    }
+
     private class IncomingMessageEvent
     {
         public string ExternalMessageId { get; set; } = string.Empty;
         public string From { get; set; } = string.Empty;
         public string? FromName { get; set; }
         public string Content { get; set; } = string.Empty;
+        public string? MediaId { get; set; }
         public string? MediaType { get; set; }
-        public string? MediaUrl { get; set; }
         public Guid TenantId { get; set; }
         public DateTime ReceivedAt { get; set; }
     }

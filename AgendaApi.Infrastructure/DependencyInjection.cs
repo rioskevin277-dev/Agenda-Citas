@@ -79,6 +79,8 @@ public static class DependencyInjection
             client.DefaultRequestHeaders.Add("User-Agent", "AgendaApi/1.0");
         });
         services.AddScoped<GroqProvider>();
+        // Speech-to-text (audios del cliente) con Groq Whisper — reutiliza el client "groq-api".
+        services.AddScoped<ISpeechToTextProvider, GroqSpeechToTextProvider>();
 
         services.AddHttpClient("openai-api", client =>
         {
