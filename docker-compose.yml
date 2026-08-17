@@ -45,6 +45,9 @@ services:
       - WhatsApp__PhoneNumberId=${WHATSAPP_PHONE_NUMBER_ID}
       - WhatsApp__VerifyToken=${WHATSAPP_VERIFY_TOKEN}
       - Groq__ApiKey=${GROQ_API_KEY}
+      - OpenRouter__ApiKey=${OPENROUTER_API_KEY}
+      - OpenRouter__Model=${OPENROUTER_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+      - OpenRouter__MaxTokens=${OPENROUTER_MAX_TOKENS:-1200}
       - GoogleOAuth__ClientId=${GoogleOAuth__ClientId}
       - GoogleOAuth__ClientSecret=${GoogleOAuth__ClientSecret}
       - MicrosoftOAuth__ClientId=${MicrosoftOAuth__ClientId}

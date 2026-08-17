@@ -82,6 +82,14 @@ public static class DependencyInjection
         // Speech-to-text (audios del cliente) con Groq Whisper — reutiliza el client "groq-api".
         services.AddScoped<ISpeechToTextProvider, GroqSpeechToTextProvider>();
 
+        // Respaldo gratuito de Groq: OpenRouter (gateway OpenAI-compatible con modelos :free).
+        services.AddHttpClient("openrouter-api", client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(60);
+            client.DefaultRequestHeaders.Add("User-Agent", "AgendaApi/1.0");
+        });
+        services.AddScoped<OpenRouterProvider>();
+
         services.AddHttpClient("openai-api", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(60);
