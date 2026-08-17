@@ -38,6 +38,11 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
         if (string.IsNullOrEmpty(phoneNumberId) || string.IsNullOrEmpty(accessToken))
             throw new InvalidOperationException("Configuración de WhatsApp incompleta");
 
+        // Defensa en profundidad: si el destinatario no es un E.164 entregable (p. ej. un id de
+        // negocio "CO.123..."), Meta lo rechaza con #131009 y el cliente nunca recibe la respuesta.
+        if (!IsE164Phone(to))
+            _logger.LogWarning("[WhatsApp] Destinatario no-E.164 para responder: {To} — Meta no entregará (131009)", to);
+
         var url = $"https://graph.facebook.com/v18.0/{phoneNumberId}/messages";
 
         var payload = new
@@ -179,14 +184,19 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
                     var phoneNumberId = metadata.GetProperty("phone_number_id").GetString() ?? "";
 
                     string nombre = "Usuario";
-                    if (value.TryGetProperty("contacts", out var contacts))
+                    string contactWaId = "";
+                    if (value.TryGetProperty("contacts", out var contacts) && contacts.GetArrayLength() > 0)
                     {
-                        nombre = contacts[0].GetProperty("profile").GetProperty("name").GetString() ?? "Usuario";
+                        var contact = contacts[0];
+                        if (contact.TryGetProperty("profile", out var profile) && profile.TryGetProperty("name", out var nameProp))
+                            nombre = nameProp.GetString() ?? "Usuario";
+                        if (contact.TryGetProperty("wa_id", out var waIdProp))
+                            contactWaId = waIdProp.GetString() ?? "";
                     }
 
                     foreach (var message in messages.EnumerateArray())
                     {
-                        var dto = ParseSingleMessage(message, phoneNumberId, nombre);
+                        var dto = ParseSingleMessage(message, phoneNumberId, nombre, contactWaId);
                         if (dto != null)
                             result.Add(dto);
                     }
@@ -226,18 +236,24 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
         return await _httpClient.GetByteArrayAsync(mediaInfo.Url, ct);
     }
 
-    private static IncomingMessage? ParseSingleMessage(JsonElement message, string phoneNumberId, string nombre)
+    private static IncomingMessage? ParseSingleMessage(JsonElement message, string phoneNumberId, string nombre, string contactWaId = "")
     {
         try
         {
             var externalId = message.GetProperty("id").GetString();
-            // Preferimos "from" (teléfono E.164 real) cuando Meta lo envía,
-            // porque es el destinatario entregable para la respuesta.
-            // "from_user_id" (identificador a nivel negocio) solo como fallback,
-            // ya que Meta puede no incluir el teléfono en algunos casos.
-            var from = message.TryGetProperty("from", out var f) ? f.GetString()
-                     : message.TryGetProperty("from_user_id", out var fuid) ? fuid.GetString()
-                     : null;
+            // El DESTINATARIO entregable debe ser un teléfono E.164 real. "from" normalmente
+            // coincide con contacts[0].wa_id (E.164). Pero cuando Meta identifica al usuario
+            // con un id de negocio ("from_user_id", p. ej. "CO.1053765850856674"), ese valor
+            // NO es válido como destinatario de la respuesta: el envío falla con HTTP 400
+            // #131009 "formato de número incorrecto". Orden de prioridad:
+            //   1) "from" si es E.164 (caso normal),
+            //   2) contacts[0].wa_id si es E.164 (número real aunque "from" venga como CO.x),
+            //   3) "from_user_id" SOLO como identidad (la entrega dependerá de que sea válido).
+            var from =
+                (message.TryGetProperty("from", out var f) && IsE164Phone(f.GetString()) ? f.GetString() : null)
+                ?? (IsE164Phone(contactWaId) ? contactWaId : null)
+                ?? (message.TryGetProperty("from_user_id", out var fuid) ? fuid.GetString() : null)
+                ?? "";
             var type = message.GetProperty("type").GetString();
             string? mediaId = null;
             string? mediaType = null;
@@ -280,6 +296,16 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
         {
             return null;
         }
+    }
+
+    /// <summary>¿Es un número de teléfono entregable (E.164, solo dígitos)? </summary>
+    private static bool IsE164Phone(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return false;
+        foreach (var c in s)
+            if (c < '0' || c > '9')
+                return false;
+        return s.Length >= 8 && s.Length <= 15;
     }
 
     /// <summary>

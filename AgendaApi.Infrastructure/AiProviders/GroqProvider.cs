@@ -12,7 +12,8 @@ namespace AgendaApi.Infrastructure.AiProviders;
 /// <summary>
 /// Adaptador para Groq (nivel gratuito). API compatible con OpenAI:
 /// usa /chat/completions con formato de tool calling idéntico a OpenAI.
-/// Modelo por defecto: llama-3.3-70b-versatile (soporta function calling).
+/// Modelo por defecto: openai/gpt-oss-120b (soporta function calling — verificado contra la
+/// cuenta real el 2026-08-17; llama-3.3-70b-versatile ya no existe ahí → 404 model_not_found).
 /// Clave en variable de entorno Groq__ApiKey / GROQ_API_KEY.
 /// </summary>
 /// <remarks>
@@ -28,7 +29,7 @@ public class GroqProvider : IAiProvider
     private readonly HttpClient _httpClient;
     private readonly ILogger<GroqProvider> _logger;
     private const string ApiUrl = "https://api.groq.com/openai/v1/chat/completions";
-    private const string Model = "llama-3.3-70b-versatile";
+    private const string Model = "openai/gpt-oss-120b";
 
     /// <summary>Intentos máximos ante 429/503 (el rate limit resetea cada minuto en el tier on_demand).</summary>
     private const int MaxRateLimitRetries = 3;

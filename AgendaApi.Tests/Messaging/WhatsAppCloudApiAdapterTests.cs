@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
@@ -40,6 +41,142 @@ public class WhatsAppCloudApiAdapterTests
         bytes.Length.Should().BeGreaterThan(0);
         // La descarga usó el "url" deserializado correctamente desde el snake_case de Graph.
         handler.LastDownloadUrl.Should().Contain("lookaside");
+    }
+
+    /// <summary>
+    /// Regresión enrutamiento: cuando Meta identifica al remitente con un id de negocio
+    /// "from_user_id" (p. ej. "CO.1053765850856674"), ese valor NO es entregable como
+    /// destinatario (HTTP 400 #131009). El adaptador debe responder al wa_id E.164 real de
+    /// contacts[0], para que el cliente reciba la respuesta del asistente.
+    /// </summary>
+    [Fact]
+    public async Task ParseWebhookPayload_BusinessIdFrom_RespondsToContactWaId()
+    {
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(new MediaDownloadHandler()),
+            new Mock<ITenantContext>().Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        var body = BuildWebhookPayload(
+            from: "CO.1053765850856674",       // id de negocio, no entregable
+            contactWaId: "573211122233",        // el número real del payload
+            fromUserId: "CO.1053765850856674",
+            fromUserIdPresent: true);
+
+        var msgs = await adapter.ParseWebhookPayloadAsync(body);
+
+        msgs.Should().HaveCount(1);
+        // El destinatario usado para la respuesta debe ser el wa_id E.164 real, NO el id CO.x.
+        msgs[0].From.Should().Be("573211122233");
+    }
+
+    [Fact]
+    public async Task ParseWebhookPayload_NormalE164From_UsesFrom()
+    {
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(new MediaDownloadHandler()),
+            new Mock<ITenantContext>().Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        var body = BuildWebhookPayload(
+            from: "573223697115",
+            contactWaId: "573223697115");
+
+        var msgs = await adapter.ParseWebhookPayloadAsync(body);
+
+        msgs.Should().HaveCount(1);
+        msgs[0].From.Should().Be("573223697115");
+    }
+
+    [Fact]
+    public async Task ParseWebhookPayload_OnlyBusinessId_KeepsItAsIdentity()
+    {
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(new MediaDownloadHandler()),
+            new Mock<ITenantContext>().Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        // Sin from E.164 válido ni wa_id: solo existe el id de negocio → se conserva como
+        // identidad (sin un número real no hay destinatario alternativo).
+        var body = new
+        {
+            entry = new object[]
+            {
+                new
+                {
+                    changes = new object[]
+                    {
+                        new
+                        {
+                            value = new
+                            {
+                                messaging_product = "whatsapp",
+                                metadata = new { phone_number_id = "123456789" },
+                                // contacts NO lleva wa_id entregable
+                                contacts = new object[] { new { profile = new { name = "X" } } },
+                                messages = new object[]
+                                {
+                                    new
+                                    {
+                                        from = "CO.1053765850856674",
+                                        from_user_id = "CO.1053765850856674",
+                                        id = "wamid.HBk",
+                                        type = "text",
+                                        text = new { body = "Hola" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        var msgs = await adapter.ParseWebhookPayloadAsync(body);
+
+        msgs.Should().HaveCount(1);
+        msgs[0].From.Should().Be("CO.1053765850856674");
+    }
+
+    /// <summary>Construye un payload de webhook típico de Meta con un solo mensaje.</summary>
+    private static object BuildWebhookPayload(string from, string contactWaId, string? fromUserId = null, bool fromUserIdPresent = false)
+    {
+        var message = new Dictionary<string, object?>
+        {
+            ["from"] = from,
+            ["id"] = "wamid.HBkX",
+            ["type"] = "text",
+            ["text"] = new { body = "Hola" }
+        };
+        if (fromUserIdPresent)
+            message["from_user_id"] = fromUserId;
+
+        var contacts = contactWaId is null
+            ? new object[] { new { profile = new { name = "Cliente" } } }
+            : new object[] { new { profile = new { name = "Cliente" }, wa_id = contactWaId } };
+
+        return new
+        {
+            entry = new object[]
+            {
+                new
+                {
+                    changes = new object[]
+                    {
+                        new
+                        {
+                            value = new
+                            {
+                                messaging_product = "whatsapp",
+                                metadata = new { phone_number_id = "123456789" },
+                                contacts,
+                                messages = new object[] { message }
+                            }
+                        }
+                    }
+                }
+            }
+        };
     }
 
     /// <summary>Responde al nodo de media (JSON snake_case) y al endpoint de descarga (bytes).</summary>
