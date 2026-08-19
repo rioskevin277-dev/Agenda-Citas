@@ -297,11 +297,44 @@ docker compose up -d --build api
 
 Si publicas sin el paso 1, el contenedor corre **código viejo** aunque el `--build` diga éxito.
 
-### Iniciar producción
-```powershell
-.\scripts\start-production.ps1
+### 🌥️ Despliegue en la nube (VPS Linux — recomendado para producción)
+
+En un VPS Ubuntu 24.04 con un dominio propio, el desarrollador desplega todo de una sola vez:
+
+```bash
+sudo ./deploy/setup-server.sh api.tuempresa.com
+# luego editar /opt/agenda-api/.env con las claves reales y:
+cd /opt/agenda-api/app && docker compose restart api
 ```
-(Levanta Docker + SQL Server + API + el túnel de Cloudflare.)
+
+El script instala Docker, genera claves seguras, clona el repo, compila la imagen
+(multi-etapa, sin publicar binario a mano), levanta SQL Server + API y configura
+Nginx + Let's Encrypt (HTTPS). Solo falta re-apuntar al dominio nuevo los webhooks
+de WhatsApp/Google/M365.
+
+> El `Dockerfile` es **multi-etapa y compila desde el código**: en local y en la
+> nube, `docker compose up --build` basta. Ya **no** se requiere `dotnet publish`.
+> (Nota para desarrolladores: la imagen empuja los `.env` por el `--env-file` de
+> compose; la conexión `Server=sqlserver` no cambia entre local y nube.)
+
+### Iniciar producción (un solo comando — recomendado)
+
+Hace **todo** el ciclo: publica el binario nuevo, reconstruye y levanta los
+contenedores, asegura Docker y el túnel de Cloudflare, y verifica el health
+real del dominio público. Esto evita el error clásico de correr contenedores
+con código viejo por no haber publicado antes.
+
+```powershell
+.\deploy.ps1            # o .\deploy.bat con doble clic
+.\scripts\deploy-production.ps1   # el script completo
+```
+
+### Iniciar producción (solo levantar, sin re-publicar)
+
+```powershell
+.\scripts\start-production.ps1    # Docker + SQL Server + API + túnel
+```
+> ⚠️ Este NO re-publica el binario. Si cambiaste código, usa `.\deploy.ps1`.
 
 O manualmente desde WSL:
 ```bash
