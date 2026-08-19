@@ -44,6 +44,9 @@ services:
       - WhatsApp__AccessToken=${WHATSAPP_ACCESS_TOKEN}
       - WhatsApp__PhoneNumberId=${WHATSAPP_PHONE_NUMBER_ID}
       - WhatsApp__VerifyToken=${WHATSAPP_VERIFY_TOKEN}
+      - Instagram__AccessToken=${INSTAGRAM_ACCESS_TOKEN}
+      - Instagram__ApiVersion=${INSTAGRAM_API_VERSION:-v18.0}
+      - Instagram__BusinessAccountId=${INSTAGRAM_BUSINESS_ACCOUNT_ID}
       - Groq__ApiKey=${GROQ_API_KEY}
       - OpenRouter__ApiKey=${OPENROUTER_API_KEY}
       - OpenRouter__Model=${OPENROUTER_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}

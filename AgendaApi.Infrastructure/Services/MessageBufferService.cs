@@ -24,7 +24,10 @@ public class MessageBufferService : BackgroundService
     private readonly ILogger<MessageBufferService> _logger;
     private readonly IServiceScopeFactory _scopeFactory;
 
-    private const int FlushDelayMs = 30_000; // 30s por buffer de usuario
+    // Tiempo de espera antes de procesar el lote de mensajes de un usuario. 8s (no 30s) para
+    // acercar el tiempo de respuesta total del bot a ~15-20s: el cliente percibe una atención
+    // ágil sin disparar una llamada de IA por cada mensaje suelto (las ráfagas cortas se agrupan).
+    private const int FlushDelayMs = 8_000; // 8s por buffer de usuario
     private const int MaxMessagesPerWindow = 5;
     private const int RateLimitWindowMs = 15_000; // 15s
     private const int CleanupIntervalMs = 60_000; // limpiar buffers viejos cada 60s
@@ -182,22 +185,34 @@ public class MessageBufferService : BackgroundService
             var fullContent = string.Join("\n", ordered.Select(m => m.Content));
 
             // Canal del asesor humano: si el remitente es el dueño configurado, su mensaje
-            // responde a una conversación escalada (se reenvía al cliente o se cierra con FIN);
-            // no se lo pasa al AI.
+            // corresponde a una conversación escalada (se reenvía al cliente o se cierra con FIN).
+            // PERO el dueño también es un comunicante legítimo del bot: si NO hay un handoff
+            // abierto que atender, su mensaje no debe tragarse — el asistente tiene que
+            // responderle igual que a cualquiera. Solo se consume cuando hubo una acción real
+            // de asesor (Forwarded: respuesta reenviada al cliente; ChatClosed: FIN para cerrar).
             var handoffService = scope.ServiceProvider.GetRequiredService<HandoffService>();
             var ownerResult = await handoffService.HandleOwnerReplyAsync(tenantId, from, fullContent, ct);
-            if (ownerResult != HandoffService.OwnerReplyResult.NotOwner)
+            if (ownerResult is HandoffService.OwnerReplyResult.Forwarded
+                or HandoffService.OwnerReplyResult.ChatClosed)
             {
-                _logger.LogInformation("[Buffer] Mensaje del asesor procesado para {Tenant}: {Result}",
+                _logger.LogInformation("[Buffer] Mensaje del asesor consumido para {Tenant}: {Result}",
                     tenantId, ownerResult);
                 return;
             }
+            // NotOwner (comunicante normal) o NoOpenHandoff (dueño sin ticket abierto): ambos
+            // caen al flujo normal de la IA y reciben respuesta.
+
+            // Límite de tiempo de respuesta: el cliente recibe una respuesta a más tardar 15 s
+            // después del flush. Si la cadena de proveedores de IA o las herramientas tardan más,
+            // el token se cancela y ProcessMessageAsync corta el turno sin bloquear al cliente.
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                using var responseCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
 
             await orchestrator.ProcessMessageAsync(
                 from,
                 fullContent,
                 tenantId,
-                ct,
+                responseCts.Token,
                 clientName);
         }
         catch (Exception ex)

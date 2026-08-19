@@ -138,6 +138,168 @@ public class WhatsAppCloudApiAdapterTests
         msgs[0].From.Should().Be("CO.1053765850856674");
     }
 
+    /// <summary>
+    /// Regresión (vía "Instagram"): un contacto que llega únicamente como id virtualizado "CO.x"/
+    /// user_id — mensaje vía Instagram en el inbox unificado de Meta (sin teléfono). El endpoint
+    /// de WhatsApp lo rechaza como "número de teléfono incorrecto" (#131009), así que el envío
+    /// debe ir por la Instagram Messaging API: POST /{cuenta-IG-business}/messages usando la cuenta
+    /// IG business como emisora (path) y el id numérico REAL del destinatario (sin el prefijo "CO.")
+    /// como recipient.id, con message.text + messaging_type "RESPONSE" y el token IG.
+    /// </summary>
+    [Fact]
+    public async Task SendTextAsync_NonE164Recipient_SendsViaInstagramApi()
+    {
+        Environment.SetEnvironmentVariable("Instagram__AccessToken", "test-ig-token");
+        Environment.SetEnvironmentVariable("Instagram__BusinessAccountId", "17841476963658642");
+        var handler = new SendCaptureHandler();
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(handler),
+            new Mock<ITenantContext>().Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        var result = await adapter.SendTextAsync("CO.1053765850856674", "Hola", CancellationToken.None);
+
+        handler.Sent.Should().BeTrue();
+        // Endpoint de la Instagram Messaging API: /{cuenta-IG-business}/messages (emisora), NO el CO.x.
+        handler.RequestUrl.Should().Contain("/17841476963658642/messages");
+        result.Should().BeNull(); // el fake no devuelve "message_id", solo campo ausente
+        // Body con el contrato de IG: recipient (id numérico sin prefijo CO.), message y RESPONSE.
+        handler.RequestBody.Should().Contain("\"recipient\":{\"id\":\"1053765850856674\"}");
+        handler.RequestBody.Should().Contain("\"message\":{\"text\":\"Hola\"}");
+        handler.RequestBody.Should().Contain("\"messaging_type\":\"RESPONSE\"");
+    }
+
+    /// <summary>
+    /// Un número E.164 (WhatsApp normal) se envía con source_type explícito WHATSAPP y el número
+    /// como `to`: no se altera el routing del caso estándar.
+    /// </summary>
+    [Fact]
+    public async Task SendTextAsync_E164Recipient_SendsViaWhatsApp()
+    {
+        Environment.SetEnvironmentVariable("WhatsApp__AccessToken", "test-token");
+        var context = new Mock<ITenantContext>();
+        context.Setup(c => c.IsSet).Returns(true);
+        context.Setup(c => c.PhoneNumberId).Returns("123456789");
+        context.Setup(c => c.WhatsAppAccessToken).Returns("test-token");
+
+        var handler = new SendCaptureHandler();
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(handler),
+            context.Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        var result = await adapter.SendTextAsync("573223697115", "Hola", CancellationToken.None);
+
+        handler.Sent.Should().BeTrue();
+        handler.RequestBody.Should().Contain("\"messaging_product\":\"whatsapp\"");
+        handler.RequestBody.Should().Contain("\"to\":\"573223697115\"");
+        result.Should().NotBeNull();
+    }
+
+    /// <summary>
+    /// Regresión "responde a unos y a otros no": Meta reporta los fallos de entrega reales
+    /// (131047 Re-engagement fuera de la ventana de 24h) con HTTP 200 + un objeto "error" en el
+    /// body. Sin tratarlo, SendTextAsync devolvía un wamid inexistente y el bot creía haber
+    /// respondido: el método debe detectar el error, no entregar (retornar null) y registrarlo.
+    /// </summary>
+    [Fact]
+    public async Task SendTextAsync_GraphErrorIn200_NotDelivered()
+    {
+        Environment.SetEnvironmentVariable("WhatsApp__AccessToken", "test-token");
+        var context = new Mock<ITenantContext>();
+        context.Setup(c => c.IsSet).Returns(true);
+        context.Setup(c => c.PhoneNumberId).Returns("123456789");
+        context.Setup(c => c.WhatsAppAccessToken).Returns("test-token");
+
+        var handler = new GraphErrorHandler();
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(handler),
+            context.Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        // Error 131047 Re-engagement con HTTP 200 (el patrón que dejaba el fallo en silencio).
+        var result = await adapter.SendTextAsync("573223697115", "Sí, tienes cita", CancellationToken.None);
+
+        handler.Sent.Should().BeTrue();
+        // No entrega: Meta respondió 200 pero rechazó el envío; debe reportarse como no-entregado.
+        result.Should().BeNull();
+    }
+
+    /// <summary>
+    /// Regresión "Instagram code 3": sin la capacidad de mensajería de IG (App Review pendiente),
+    /// Meta responde 200 + error code 3. El DM no se entrega (retorna null) en lugar de "enviado".
+    /// </summary>
+    [Fact]
+    public async Task SendInstagramDirect_Code3Capability_NotDelivered()
+    {
+        Environment.SetEnvironmentVariable("Instagram__AccessToken", "test-ig-token");
+        Environment.SetEnvironmentVariable("Instagram__BusinessAccountId", "17841476963658642");
+        var handler = new GraphErrorHandler();
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(handler),
+            new Mock<ITenantContext>().Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        var result = await adapter.SendTextAsync("CO.1053765850856674", "Hola", CancellationToken.None);
+
+        handler.Sent.Should().BeTrue();
+        result.Should().BeNull(); // no entregado: app sin capacidad de mensajería de IG
+    }
+
+    /// <summary>
+    /// Regresión: un template que Meta rechaza (p. ej. no aprobado / fuera de ventana) con 200 + error
+    /// no debe entregarse en silencio.
+    /// </summary>
+    [Fact]
+    public async Task SendTemplateAsync_GraphErrorIn200_NotDelivered()
+    {
+        Environment.SetEnvironmentVariable("WhatsApp__AccessToken", "test-token");
+        var context = new Mock<ITenantContext>();
+        context.Setup(c => c.IsSet).Returns(true);
+        context.Setup(c => c.PhoneNumberId).Returns("123456789");
+        context.Setup(c => c.WhatsAppAccessToken).Returns("test-token");
+
+        var handler = new GraphErrorHandler();
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(handler),
+            context.Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        var result = await adapter.SendTemplateAsync(
+            "573223697115",
+            "recordatorio_24h",
+            new Dictionary<string, string> { ["1"] = "Ana" },
+            CancellationToken.None);
+
+        handler.Sent.Should().BeTrue();
+        result.Should().BeNull();
+    }
+
+    /// <summary>
+    /// Regresión: una respuesta exitosa (HTTP 200 sin bloque "error", con wamid) sí se entrega.
+    /// Garantiza que el nuevo check de efectos colaterales no rompa el happy path.
+    /// </summary>
+    [Fact]
+    public async Task SendTextAsync_Http200_NoGraphError_StillDelivers()
+    {
+        Environment.SetEnvironmentVariable("WhatsApp__AccessToken", "test-token");
+        var context = new Mock<ITenantContext>();
+        context.Setup(c => c.IsSet).Returns(true);
+        context.Setup(c => c.PhoneNumberId).Returns("123456789");
+        context.Setup(c => c.WhatsAppAccessToken).Returns("test-token");
+
+        var handler = new SendCaptureHandler(); // devuelve 200 con wamid válido, sin "error"
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(handler),
+            context.Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        var result = await adapter.SendTextAsync("573223697115", "Hola", CancellationToken.None);
+
+        result.Should().NotBeNull();
+        result.Should().Contain("wamid");
+    }
+
     /// <summary>Construye un payload de webhook típico de Meta con un solo mensaje.</summary>
     private static object BuildWebhookPayload(string from, string contactWaId, string? fromUserId = null, bool fromUserIdPresent = false)
     {
@@ -179,7 +341,87 @@ public class WhatsAppCloudApiAdapterTests
         };
     }
 
+    /// <summary>
+    /// Regresión fail-safe: la ruta Instagram (destinatarios NO-telefónicos, id virtualizado XX.)
+    /// no debe lanzar excepción cuando Meta responde HTTP != 200; debe devolver null, de lo
+    /// contrario un solo DM de IG tumba el flush del cliente ("[ERR] Error en flush").
+    /// </summary>
+    [Fact]
+    public async Task SendInstagramDirect_HttpErrorStatus_DoesNotThrow_ReturnsNull()
+    {
+        Environment.SetEnvironmentVariable("Instagram__AccessToken", "test-ig-token");
+        Environment.SetEnvironmentVariable("Instagram__BusinessAccountId", "17841476963658642");
+        var handler = new ServerErrorHandler(); // responde HTTP 500
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(handler),
+            new Mock<ITenantContext>().Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        var act = () => adapter.SendTextAsync("PE.1093281683152939", "Hola", CancellationToken.None);
+
+        // No debe lanzar: devuelve null (no entregado) para no romper el turno.
+        var result = await act.Should().NotThrowAsync();
+        result.Subject.Should().BeNull();
+    }
+
+    /// <summary>Devuelve HTTP 200 con un objeto "error" de Graph (lo que Meta hace ante fallos de
+    /// entrega reales como 131047/code 3) para verificar que el envío no se "finge" entregado.</summary>
+    private class ServerErrorHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+            => Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            {
+                Content = new StringContent("{\"error\":{\"message\":\"server error\"}}")
+            });
+    }
+
+    private class GraphErrorHandler : HttpMessageHandler
+    {
+        public bool Sent { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Sent = true;
+            const string errorBody =
+                """
+                {"error":{"message":"(#3) Re-engagement messages are not possible outside a 24-hour customer service window.","type":"OAuthException","code":131047,"error_subcode":2494010,"fbtrace_id":"abc123"}}
+                """;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(errorBody)
+            });
+        }
+    }
+
     /// <summary>Responde al nodo de media (JSON snake_case) y al endpoint de descarga (bytes).</summary>
+    /// <summary>
+    /// Captura el body del POST a Graph /messages y responde un wamid válido (como Meta).
+    /// </summary>
+    private class SendCaptureHandler : HttpMessageHandler
+    {
+        public bool Sent { get; private set; }
+        public string RequestUrl { get; private set; } = "";
+        public string RequestBody { get; private set; } = "";
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.Content != null)
+                RequestBody = await request.Content.ReadAsStringAsync(cancellationToken);
+            RequestUrl = request.RequestUri?.ToString() ?? "";
+            Sent = true;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"messages":[{"id":"wamid.HBgAAAA"}]}""")
+            };
+        }
+    }
+
     private class MediaDownloadHandler : HttpMessageHandler
     {
         public string? LastDownloadUrl { get; private set; }
