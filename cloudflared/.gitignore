@@ -1,0 +1,4 @@
+# La credencial del túnel (JSON) es un secreto y NO debe subirse a git.
+# Copia el archivo JSON aquí manualmente (desde ~/.cloudflared de WSL)
+# o que el script de deploy lo haga.
+*.json

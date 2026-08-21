@@ -137,7 +137,7 @@ Write-Ok "Docker listo"
 
 # ─── 4. Reconstruir y levantar contenedores ───────────────────────
 Write-Step "4/7 Reconstruyendo y levantando contenedores (docker compose up -d --build)..."
-wsl -d $WslDistro bash -c "cd /mnt/c/Users/USUARIO/agenda-api && docker compose up -d --build api 2>&1"
+wsl -d $WslDistro bash -c "cd /mnt/c/Users/USUARIO/agenda-api && docker compose up -d --build 2>&1"
 if ($LASTEXITCODE -ne 0) {
     Write-Err "Falló docker compose up --build"
     exit 1
@@ -160,15 +160,30 @@ if (-not $healthOk) {
     Write-Warn "La API local no respondió en 60s. Revisa con: docker logs agenda-api -f"
 }
 
-# ─── 6. Asegurar Cloudflare Tunnel ────────────────────────────────
-Write-Step "6/7 Asegurando Cloudflare Tunnel..."
-$tunnelRunning = wsl -d $WslDistro bash -c "ps aux | grep cloudflared | grep -v grep" 2>&1
-if (-not $tunnelRunning) {
-    Write-Warn "El túnel no estaba corriendo, iniciándolo..."
-    wsl -d $WslDistro -u $WslUser bash -c "nohup cloudflared tunnel run $TunnelName > /dev/null 2>&1 &"
+# ─── 6. Asegurar Cloudflare Tunnel (ahora como contenedor) ────────
+Write-Step "6/7 Asegurando Cloudflare Tunnel (contenedor)..."
+# Detiene cualquier túnel WSL viejo (ya no se usa; el túnel es el contenedor)
+wsl -d $WslDistro bash -c "pkill -f cloudflared 2>/dev/null; true" 2>$null
+# Levanta el contenedor cloudflared y REINTENTA si crashea en el arranque en frío
+# del engine de Docker (exited 127) — ese es el caso que dejaba el túnel caído.
+$cfRunning = $false
+for ($i = 1; $i -le 5; $i++) {
+    $cfUp = "cd /mnt/c/Users/USUARIO/agenda-api && docker compose up -d cloudflared 2>&1"
+    wsl -d $WslDistro bash -c $cfUp | Out-Host
+    # Espera a que registre al menos una conexión de túnel (o salga de nuevo)
     Start-Sleep -Seconds 8
-} else {
-    Write-Ok "El túnel de Cloudflare ya está corriendo"
+    $st = & docker inspect -f '{{.State.Status}}' agenda-cloudflared 2>$null
+    if ($st -eq "running") {
+        Write-Ok "Túnel Cloudflare (contenedor) activo (intento $i)"
+        $cfRunning = $true
+        break
+    }
+    Write-Warn "cloudflared no quedó arriba (estado: '$st'), reintentando... ($i/5)"
+    & docker stop agenda-cloudflared 2>$null | Out-Null
+    Start-Sleep -Seconds 5
+}
+if (-not $cfRunning) {
+    Write-Warn "El contenedor cloudflared no arrancó tras 5 intentos. Revisa: docker logs agenda-cloudflared"
 }
 
 # ─── 7. Verificar dominio público ─────────────────────────────────

@@ -21,8 +21,10 @@ public class MessageBufferService : BackgroundService
     private readonly Channel<IncomingMessageEvent> _channel;
     private readonly ConcurrentDictionary<string, UserMessageBuffer> _userBuffers;
     private readonly ConcurrentDictionary<string, List<DateTime>> _userRateLimits;
+    private readonly MessageRetryService _retryService;
     private readonly ILogger<MessageBufferService> _logger;
     private readonly IServiceScopeFactory _scopeFactory;
+    private CancellationToken _shutdownToken;
 
     // Tiempo de espera antes de procesar el lote de mensajes de un usuario. 8s (no 30s) para
     // acercar el tiempo de respuesta total del bot a ~15-20s: el cliente percibe una atención
@@ -31,6 +33,7 @@ public class MessageBufferService : BackgroundService
     private const int MaxMessagesPerWindow = 5;
     private const int RateLimitWindowMs = 15_000; // 15s
     private const int CleanupIntervalMs = 60_000; // limpiar buffers viejos cada 60s
+    private const int RetryCheckIntervalMs = 15_000; // revisar reintentos vencidos cada 15s
 
     public MessageBufferService(
         ILogger<MessageBufferService> logger,
@@ -38,6 +41,7 @@ public class MessageBufferService : BackgroundService
     {
         _logger = logger;
         _scopeFactory = scopeFactory;
+        _retryService = new MessageRetryService();
         _channel = Channel.CreateBounded<IncomingMessageEvent>(new BoundedChannelOptions(1000)
         {
             FullMode = BoundedChannelFullMode.DropOldest
@@ -79,12 +83,24 @@ public class MessageBufferService : BackgroundService
     {
         _logger.LogInformation("[Buffer] MessageBufferService iniciado");
 
+        // Guardar el token de apagado: los reintentos (fire-and-forget desde el timer) lo usan
+        // para cancelar el procesamiento cuando el host se detiene.
+        _shutdownToken = stoppingToken;
+
         // Timer de limpieza periódica
         using var cleanupTimer = new Timer(
             CleanupBuffers,
             null,
             CleanupIntervalMs,
             CleanupIntervalMs);
+
+        // Timer de reintentos (backoff 30s/2m/8m de MessageRetryService): reintenta mensajes
+        // que fallaron al procesarse para que un fallo transitorio no deje un cliente sin respuesta.
+        using var retryTimer = new Timer(
+            ProcessRetries,
+            null,
+            RetryCheckIntervalMs,
+            RetryCheckIntervalMs);
 
         // Reader loop
         var readerTask = ProcessMessagesAsync(stoppingToken);
@@ -146,6 +162,8 @@ public class MessageBufferService : BackgroundService
 
     /// <summary>
     /// Procesa el buffer de un usuario: envía todos los mensajes acumulados al ChatOrchestrator.
+    /// Si el procesamiento falla (error transitorio de BD, proveedor de IA o entrega), el mensaje
+    /// NO se pierde: queda programado en MessageRetryService con backoff (30s/2m/8m).
     /// </summary>
     private async Task FlushUserBufferAsync(string from, CancellationToken ct)
     {
@@ -162,34 +180,57 @@ public class MessageBufferService : BackgroundService
             _logger.LogInformation("[Buffer] Flushing {Count} mensajes para {From}",
                 buffer.Messages.Count, from);
 
-            // Crear scope para resolver servicios scoped
-            using var scope = _scopeFactory.CreateScope();
-            var orchestrator = scope.ServiceProvider.GetRequiredService<ChatOrchestratorService>();
-
             var lastMsg = buffer.Messages.Last();
             var tenantId = lastMsg.TenantId;
             var clientName = lastMsg.FromName;
+            var receivedAt = lastMsg.ReceivedAt;
 
             // Transcripción de audios: si el cliente envió uno o más audios, se descargan,
             // se transcriben (Groq Whisper) y el texto reemplaza el placeholder "[audio]"
             // para que el flujo los trate como mensajes escritos.
             var ordered = buffer.Messages.OrderBy(m => m.ReceivedAt).ToList();
-            foreach (var m in ordered.Where(m => IsAudio(m)))
+            if (ordered.Any(IsAudio))
             {
-                var transcript = await TranscribeAudioAsync(scope, tenantId, m.MediaId, m.MediaType, ct);
-                if (!string.IsNullOrWhiteSpace(transcript))
-                    m.Content = transcript;
+                using var scope = _scopeFactory.CreateScope();
+                foreach (var m in ordered.Where(IsAudio))
+                {
+                    var transcript = await TranscribeAudioAsync(scope, tenantId, m.MediaId, m.MediaType, ct);
+                    if (!string.IsNullOrWhiteSpace(transcript))
+                        m.Content = transcript;
+                }
             }
 
             // Concatenar mensajes del buffer en orden
             var fullContent = string.Join("\n", ordered.Select(m => m.Content));
 
-            // Canal del asesor humano: si el remitente es el dueño configurado, su mensaje
-            // corresponde a una conversación escalada (se reenvía al cliente o se cierra con FIN).
-            // PERO el dueño también es un comunicante legítimo del bot: si NO hay un handoff
-            // abierto que atender, su mensaje no debe tragarse — el asistente tiene que
-            // responderle igual que a cualquiera. Solo se consume cuando hubo una acción real
-            // de asesor (Forwarded: respuesta reenviada al cliente; ChatClosed: FIN para cerrar).
+            // Intento inicial (failedAttempts=0 ⇒ aun no ha fallado ninguno).
+            await ProcessAndMaybeRetryAsync(from, fullContent, tenantId, clientName, receivedAt, failedAttempts: 0, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[Buffer] Error en flush para {From}", from);
+        }
+    }
+
+    /// <summary>
+    /// Procesa un lote (flush inicial o reintento) y, si falla, programa un reintento con backoff.
+    /// Comparte el canal del asesor humano: el mensaje del dueño SOLO se consume cuando hubo una
+    /// acción real de asesor (Forwarded: respuesta reenviada al cliente; ChatClosed: FIN para
+    /// cerrar); en cualquier otro caso cae al flujo normal de la IA y recibe respuesta.
+    /// </summary>
+    private async Task ProcessAndMaybeRetryAsync(
+        string from,
+        string fullContent,
+        Guid tenantId,
+        string? clientName,
+        DateTime receivedAt,
+        int failedAttempts,
+        CancellationToken ct)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+
             var handoffService = scope.ServiceProvider.GetRequiredService<HandoffService>();
             var ownerResult = await handoffService.HandleOwnerReplyAsync(tenantId, from, fullContent, ct);
             if (ownerResult is HandoffService.OwnerReplyResult.Forwarded
@@ -199,25 +240,52 @@ public class MessageBufferService : BackgroundService
                     tenantId, ownerResult);
                 return;
             }
-            // NotOwner (comunicante normal) o NoOpenHandoff (dueño sin ticket abierto): ambos
-            // caen al flujo normal de la IA y reciben respuesta.
+
+            var orchestrator = scope.ServiceProvider.GetRequiredService<ChatOrchestratorService>();
 
             // Límite de tiempo de respuesta: el cliente recibe una respuesta a más tardar 15 s
             // después del flush. Si la cadena de proveedores de IA o las herramientas tardan más,
             // el token se cancela y ProcessMessageAsync corta el turno sin bloquear al cliente.
             using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-                using var responseCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+            using var responseCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
 
-            await orchestrator.ProcessMessageAsync(
-                from,
-                fullContent,
-                tenantId,
-                responseCts.Token,
-                clientName);
+            await orchestrator.ProcessMessageAsync(from, fullContent, tenantId, responseCts.Token, clientName);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[Buffer] Error en flush para {From}", from);
+            var failures = failedAttempts + 1;
+            _logger.LogError(ex, "[Buffer] Error procesando mensaje de {From} (intento {Failures})", from, failures);
+
+            if (_retryService.Schedule(from, fullContent, tenantId, clientName, receivedAt, DateTime.UtcNow, failures))
+            {
+                _logger.LogWarning("[Buffer] Reintento de {From} programado (fallo {Failures}/{Max})",
+                    from, failures, _retryService.MaxRetries);
+            }
+            else
+            {
+                _logger.LogError("[Buffer] Se agotaron los reintentos ({Max}) para {From}: no se pudo atender el mensaje",
+                    _retryService.MaxRetries, from);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Timer de reintentos: entrega los candidatos cuyo backoff venció y los ejecuta. Los que
+    /// excedieron la ventana total de 30 min se descartan (con log) para no atender contenido obsoleto.
+    /// </summary>
+    private void ProcessRetries(object? state)
+    {
+        foreach (var item in _retryService.CollectDue(DateTime.UtcNow))
+        {
+            if (item.Expired)
+            {
+                _logger.LogError("[Buffer] Reintento de {From} expirado (>30 min): no se pudo atender", item.Key);
+                continue;
+            }
+
+            _logger.LogInformation("[Buffer] Reintento #{Attempt}/{Max} de {From}",
+                item.Attempt, _retryService.MaxRetries + 1, item.Key);
+            _ = ProcessAndMaybeRetryAsync(item.Key, item.Content, item.TenantId, item.ClientName, item.ReceivedAt, item.Attempt - 1, _shutdownToken);
         }
     }
 

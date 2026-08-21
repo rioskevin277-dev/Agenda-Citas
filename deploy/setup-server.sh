@@ -82,10 +82,6 @@ NOTIFICACIONES_WHATSAPP_DUENO=   # número del dueño para avisos/handoff
 WHATSAPP_RECORDATORIO_TEMPLATE_24H=   # template aprobado (opcional)
 WHATSAPP_RECORDATORIO_TEMPLATE_2H=    # template aprobado (opcional)
 
-# --- Instagram (opcional) ---
-INSTAGRAM_ACCESS_TOKEN=
-INSTAGRAM_BUSINESS_ACCOUNT_ID=
-
 # --- Google Calendar (opcional; redirect en tu dominio) ---
 GoogleOAuth__ClientId=
 GoogleOAuth__ClientSecret=

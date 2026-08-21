@@ -1,0 +1,12 @@
+# Config del Cloudflare Tunnel para AgendaApi (contendor).
+# Este contenedor vive en la misma red de Docker que la API, así que
+# resuelve el origen por nombre de servicio: http://api:8080
+# (evita el problema de WSL2 donde localhost del túnel != localhost de la app).
+
+tunnel: 6c10be19-691e-4aa5-929d-922869d20948
+credentials-file: /etc/cloudflared/6c10be19-691e-4aa5-929d-922869d20948.json
+
+ingress:
+  - hostname: api.adamcoia.com
+    service: http://api:8080
+  - service: http_status:404

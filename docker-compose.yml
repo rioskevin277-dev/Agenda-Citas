@@ -44,9 +44,6 @@ services:
       - WhatsApp__AccessToken=${WHATSAPP_ACCESS_TOKEN}
       - WhatsApp__PhoneNumberId=${WHATSAPP_PHONE_NUMBER_ID}
       - WhatsApp__VerifyToken=${WHATSAPP_VERIFY_TOKEN}
-      - Instagram__AccessToken=${INSTAGRAM_ACCESS_TOKEN}
-      - Instagram__ApiVersion=${INSTAGRAM_API_VERSION:-v18.0}
-      - Instagram__BusinessAccountId=${INSTAGRAM_BUSINESS_ACCOUNT_ID}
       - Groq__ApiKey=${GROQ_API_KEY}
       - OpenRouter__ApiKey=${OPENROUTER_API_KEY}
       - OpenRouter__Model=${OPENROUTER_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
@@ -69,6 +66,27 @@ services:
         limits:
           memory: 512M
           cpus: "0.5"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: agenda-cloudflared
+    restart: always
+    # http2 (TCP) en vez de quic (UDP): en redes/WSL2 el UDP 7844 de Cloudflare suele
+    # estar bloqueado y el túnel nunca completa el handshake ("Failed to dial a quic connection").
+    environment:
+      - TUNNEL_TRANSPORT_PROTOCOL=http2
+    command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run 6c10be19-691e-4aa5-929d-922869d20948
+    volumes:
+      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - ./cloudflared/6c10be19-691e-4aa5-929d-922869d20948.json:/etc/cloudflared/6c10be19-691e-4aa5-929d-922869d20948.json:ro
+    depends_on:
+      - api
+    networks:
+      - agenda-net
+    deploy:
+      resources:
+        limits:
+          memory: 64M
 
 volumes:
   sqlserver-data:
