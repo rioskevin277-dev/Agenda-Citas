@@ -142,14 +142,14 @@ public class ChatOrchestratorService
         try
         {
             var clientContextService = services.GetRequiredService<ClientContextService>();
-            clientContext = await clientContextService.BuildClientContextAsync(tenantId, userPhone, ct);
+            clientContext = await clientContextService.BuildClientContextAsync(tenantId, userPhone, ct, clientName);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "[CRM] No se pudo compilar el contexto del cliente {Phone}", userPhone);
         }
 
-        var systemPrompt = GetSystemPrompt(userPhone, clientName, serviceTypes, professionals, pendingBooking, clientContext);
+        var systemPrompt = GetSystemPrompt(userPhone, clientName, tenant, serviceTypes, professionals, pendingBooking, clientContext);
 
         // Cargar historial previo de la conversación (si existe) para conservar contexto.
         var messages = _conversationMemory.GetHistory(conversationKey, systemPrompt);
@@ -385,20 +385,35 @@ public class ChatOrchestratorService
         }
     }
 
-    private static string GetSystemPrompt(string userPhone, string? clientName, List<Domain.Entities.ServiceType>? serviceTypes = null, List<Domain.Entities.Professional>? professionals = null, PendingBooking? pendingBooking = null, string? clientContext = null)
+    private static string GetSystemPrompt(string userPhone, string? clientName, Domain.Entities.Tenant? business, List<Domain.Entities.ServiceType>? serviceTypes = null, List<Domain.Entities.Professional>? professionals = null, PendingBooking? pendingBooking = null, string? clientContext = null)
     {
         string senderIdentity = string.IsNullOrWhiteSpace(clientName)
             ? $"El cliente que te escribe tiene el WhatsApp {userPhone}."
             : $"El cliente que te escribe se llama {clientName} y su WhatsApp es {userPhone}.";
 
-        // Lista real de servicios disponibles: la IA SOLO debe sugerir/agendar estos.
+        // Datos del negocio: nombre comercial, dirección y teléfono reales del tenant. La IA
+        // DEBE responder con estos datos exactos (no inventados) ante preguntas del negocio.
+        var cultEsp = System.Globalization.CultureInfo.GetCultureInfo("es-ES");
+        string negocioNombre = string.IsNullOrWhiteSpace(business?.NombreComercial)
+            ? business?.Nombre ?? "el negocio"
+            : business.NombreComercial;
+        var negocio = new System.Text.StringBuilder();
+        negocio.Append("\n\nDATOS DEL NEGOCIO (datos exactos del negocio — úsalos siempre y NO los inventes):\n");
+        negocio.Append("- Negocio: ").Append(negocioNombre).Append('\n');
+        if (!string.IsNullOrWhiteSpace(business?.Direccion)) negocio.Append("- Dirección: ").Append(business.Direccion).Append('\n');
+        if (!string.IsNullOrWhiteSpace(business?.Telefono)) negocio.Append("- Teléfono: ").Append(business.Telefono).Append('\n');
+        negocio.Append("- Cuando te pregunten precio, duración u horarios responde SIEMPRE con los datos reales de SERVICIOS DISPONIBLES y de check_availability. Nunca los inventes.");
+        string datosNegocio = negocio.ToString();
+
+        // Lista real de servicios disponibles (con precio y duración del tenant): la IA SOLO debe
+        // sugerir/agendar estos y responder precios/duración con estos valores exactos.
         // Si no viene, se omite el bloque (por compatibilidad con pruebas).
         string serviciosDisponibles = serviceTypes is { Count: > 0 }
             ? @"
 
-SERVICIOS DISPONIBLES (lista exacta del negocio — NO inventes ni modifiques estos nombres, NO agregues servicios que no esten aqui):
-" + string.Join("\n", serviceTypes.Where(s => s.Activo).Select(s => $"- {s.Nombre}")) + @"
-- Cuando el cliente pida un servicio que NO este en esta lista, informale que no esta disponible y sugiere los que si hay. NUNCA intentes agendar un servicio fuera de esta lista."
+SERVICIOS DISPONIBLES (lista exacta del negocio — estos son los UNICOS servicios, con su precio y duración reales. NO inventes ni modifiques nombres, precios ni duraciones, NO agregues servicios que no esten aqui):
+" + string.Join("\n", serviceTypes.Where(s => s.Activo).Select(s => FormatServiceLine(s, cultEsp))) + @"
+- Cuando el cliente pida un servicio que NO este en esta lista, informale que no esta disponible y sugiere los que si hay. NUNCA intentes agendar un servicio fuera de esta lista. Cuando pregunten el precio o la duración, responde con el dato real de esta lista."
             : "";
 
         // Profesionales disponibles: la IA debe usar nombres EXACTOS de esta lista al asignar
@@ -453,7 +468,7 @@ REGLAS CRITICAS SOBRE LOS DATOS DEL CLIENTE:
 - El WhatsApp del cliente SIEMPRE es el numero real " + userPhone + @". NUNCA lo inventes ni uses numeros de ejemplo (como 1234567890).
 - Cuando la herramienta create_appointment pida client_whatsapp, usa SIEMPRE " + userPhone + @".
 - Usa el nombre del cliente solo si lo confirmo en la conversacion; si no lo sabes, no lo inventes.
-" + serviciosDisponibles + profesionalesDisponibles + @"
+" + datosNegocio + serviciosDisponibles + profesionalesDisponibles + @"
 
 HERRAMIENTAS DISPONIBLES:
 - check_availability: Consultar horarios disponibles
@@ -464,6 +479,14 @@ HERRAMIENTAS DISPONIBLES:
 - list_appointments: Listar las citas del cliente
 - add_to_waitlist: Agregar al cliente a la lista de espera de un servicio (cuando no haya disponibilidad y el cliente lo acepte)
 - request_human_attention: Escalar al cliente a un asesor humano (cuando lo pida o no se pueda resolver)" + (clientContext ?? "") + reservaEnCurso;
+    }
+
+    private static string FormatServiceLine(Domain.Entities.ServiceType s, System.Globalization.CultureInfo cult)
+    {
+        var detalle = new List<string>();
+        if (s.DuracionMinutos > 0) detalle.Add($"{s.DuracionMinutos} min");
+        if (s.Precio.HasValue) detalle.Add($"${s.Precio.Value.ToString("N0", cult)}");
+        return detalle.Count > 0 ? $"- {s.Nombre} ({string.Join(", ", detalle)})" : $"- {s.Nombre}";
     }
 
     // Tool Handlers

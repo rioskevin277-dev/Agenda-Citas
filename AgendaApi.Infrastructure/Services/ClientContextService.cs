@@ -40,18 +40,21 @@ public class ClientContextService
     public async Task<string> BuildClientContextAsync(
         Guid tenantId,
         string whatsapp,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? clientName = null)
     {
         var client = await _clientRepo.GetByWhatsAppAsync(whatsapp, tenantId, ct);
 
         if (client == null)
         {
             // Primer contacto: se crea el cliente con estado 'nuevo' para que quede en el CRM.
+            // Si el webhook trae el nombre del perfil de WhatsApp, se persiste (personalización).
             var nuevo = new Client
             {
                 IdClient = Guid.NewGuid(),
                 IdTenant = tenantId,
                 WhatsApp = whatsapp,
+                Nombre = string.IsNullOrWhiteSpace(clientName) ? null : clientName,
                 Estado = "nuevo",
                 Activo = true,
                 UltimaInteraccion = DateTime.UtcNow
@@ -59,12 +62,16 @@ public class ClientContextService
             await _clientRepo.CreateAsync(nuevo, ct);
             await _unitOfWork.SaveChangesAsync(ct);
             _logger.LogInformation("[CRM] Cliente {Whatsapp} creado (nuevo) en tenant {Tenant}", whatsapp, tenantId);
-            return BuildBlock(nuevo, new List<Appointment>(), 0);
+            return BuildBlock(nuevo, new List<Appointment>(), 0, DateTime.UtcNow);
         }
 
         // Actualizar la interacción del cliente cada vez que escribe.
         client.UltimaInteraccion = DateTime.UtcNow;
         client.FechaActualizacion = DateTime.UtcNow;
+
+        // Si el cliente aún no tiene nombre y el webhook lo trae, se persiste (mejora el CRM).
+        if (string.IsNullOrWhiteSpace(client.Nombre) && !string.IsNullOrWhiteSpace(clientName))
+            client.Nombre = clientName;
 
         // Historial de citas del cliente para derivar contexto.
         var appointments = await _appointmentRepo.GetByClientIdAsync(client.IdClient, ct);
@@ -76,15 +83,18 @@ public class ClientContextService
         await _clientRepo.UpdateAsync(client, ct);
         await _unitOfWork.SaveChangesAsync(ct);
 
-        return BuildBlock(client, appointments, appointments.Count);
+        return BuildBlock(client, appointments, appointments.Count, DateTime.UtcNow);
     }
 
-    private static string BuildBlock(Client client, List<Appointment> appointments, int totalCitas)
+    private static string BuildBlock(Client client, List<Appointment> appointments, int totalCitas, DateTime now)
     {
         var cult = CultureInfo.GetCultureInfo("es-ES");
 
+        // "Servicios ya realizados": una cita cuenta como realizada si está marcada 'completed'
+        // o si estaba 'confirmed' y su fecha ya pasó (asistida). Sin esto, y como nada en el
+        // sistema marca 'completed', el historial siempre aparecería vacío.
         var servicios = appointments
-            .Where(a => a.Estado == "completed")
+            .Where(a => a.Estado == "completed" || (a.Estado == "confirmed" && a.FechaFin < now))
             .Select(a => a.ServiceType?.Nombre)
             .Where(n => !string.IsNullOrWhiteSpace(n))
             .Distinct()
@@ -95,7 +105,7 @@ public class ClientContextService
 
         string ultimaCita = "—";
         var ultimaCompletada = appointments
-            .Where(a => a.Estado == "completed")
+            .Where(a => a.Estado == "completed" || (a.Estado == "confirmed" && a.FechaFin < now))
             .OrderByDescending(a => a.FechaInicio)
             .FirstOrDefault();
         if (ultimaCompletada != null)
