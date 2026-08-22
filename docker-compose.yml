@@ -38,6 +38,7 @@ services:
     environment:
       - ConnectionStrings__AgendaDb=Server=sqlserver;Database=AgendaApi;User Id=sa;Password=${SQL_PASSWORD:-AgendaApi_Prod_ChangeMe!};TrustServerCertificate=True;MultipleActiveResultSets=true
       - TokenEncryption__MasterKey=${MASTER_KEY}
+      - DASHBOARD_KEY=${DASHBOARD_KEY}
       - Jwt__Secret=${JWT_SECRET}
       - OpenAI__ApiKey=${OPENAI_API_KEY}
       - Anthropic__ApiKey=${ANTHROPIC_API_KEY}

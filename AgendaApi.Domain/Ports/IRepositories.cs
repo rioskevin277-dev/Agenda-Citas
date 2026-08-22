@@ -182,6 +182,14 @@ public interface IConversationHistoryRepository
 
     /// <summary>Últimos N mensajes de la conversación de un cliente, más recientes primero.</summary>
     Task<List<ConversationMessage>> GetRecentAsync(Guid tenantId, string phoneCliente, int limit = 20, CancellationToken ct = default);
+
+    /// <summary>Últimos N mensajes de TODOS los tenants (más recientes primero). Para el dashboard
+    /// de conversaciones en vivo del dueño (gate por clave, no por JWT).</summary>
+    Task<List<ConversationMessage>> GetLatestAsync(int limit, CancellationToken ct = default);
+
+    /// <summary>Mensajes de TODOS los tenants con FechaCreacion >= afterUtc, cronológicos.
+    /// Polling incremental del dashboard en vivo: el cliente dedup por id (colisiones de timestamp).</summary>
+    Task<List<ConversationMessage>> GetSinceAsync(DateTime afterUtc, int limit, CancellationToken ct = default);
 }
 
 /// <summary>

@@ -29,4 +29,24 @@ public class ConversationHistoryRepository : IConversationHistoryRepository
             .OrderByDescending(m => m.FechaCreacion)
             .Take(limit)
             .ToListAsync(ct);
+
+    public async Task<List<ConversationMessage>> GetLatestAsync(
+        int limit,
+        CancellationToken ct = default)
+        => (await _context.ConversationMessages
+            .OrderByDescending(m => m.FechaCreacion)
+            .Take(limit)
+            .ToListAsync(ct))
+            .OrderBy(m => m.FechaCreacion)   // ventana cronológica (más antigua primero)
+            .ToList();
+
+    public async Task<List<ConversationMessage>> GetSinceAsync(
+        DateTime afterUtc,
+        int limit,
+        CancellationToken ct = default)
+        => await _context.ConversationMessages
+            .Where(m => m.FechaCreacion >= afterUtc)
+            .OrderBy(m => m.FechaCreacion)
+            .Take(limit)
+            .ToListAsync(ct);
 }

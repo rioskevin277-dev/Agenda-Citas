@@ -199,11 +199,14 @@ public class ChatOrchestratorService
             {
                 _logger.LogError("[Orchestrator] Todos los proveedores fallaron: {Error}", result.TextContent);
                 const string errorText = "Lo siento, tuve un problema. Por favor intenta mas tarde.";
+                // Registrar el turno del asistente ANTES de escalar/enviar: si la escalada o el
+                // envío de WhatsApp lanzan una excepción tras entregar, el histórico igual queda
+                // persistido (y aparece en el dashboard en vivo).
+                _conversationMemory.AddAssistant(conversationKey, errorText);
+                await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", errorText, ct);
                 await EscalateToHumanAsync(services, tenantId, userPhone, clientName,
                     "Todos los proveedores de IA fallaron al procesar la solicitud del cliente.", accionesPrevias, ct);
                 await messaging.SendTextAsync(userPhone, errorText);
-                _conversationMemory.AddAssistant(conversationKey, errorText);
-                await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", errorText, ct);
                 return;
             }
             _logger.LogInformation("[Orchestrator] Respondiendo con {Provider}", usedProvider);
@@ -989,7 +992,9 @@ RESERVA EN CURSO: el cliente estaba armando una cita (" + string.Join(" ", parte
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "[CRM] No se pudo persistir el turno de conversación de {Phone}", userPhone);
+            // Falla silencioso para no romper el turno del cliente, pero se registra en el
+            // log real (no Debug) para que un fallo de persistencia sea visible al diagnosticar.
+            _logger.LogWarning(ex, "[CRM] No se pudo persistir el turno de conversación de {Phone}", userPhone);
         }
     }
 }
