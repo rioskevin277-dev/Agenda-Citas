@@ -18,8 +18,9 @@ public class ConversationMessage
     [Column("id_tenant")]
     public Guid IdTenant { get; set; }
 
+    /// <summary>Identidad canónica del cliente (BSUID user_id si existe, si no el teléfono).</summary>
     [Column("phone_cliente")]
-    [StringLength(20)]
+    [StringLength(200)]
     public string PhoneCliente { get; set; } = string.Empty;
 
     /// <summary>Rol del remitente: user (cliente) | assistant (ADAM).</summary>

@@ -27,11 +27,16 @@ public class ConversationMemoryService : IConversationSessionService
         _logger = logger;
     }
 
-    public static string GetKey(Guid tenantId, string userPhone)
-        => $"{tenantId:N}:{NormalizePhone(userPhone)}";
+    public static string GetKey(Guid tenantId, string identity)
+        => $"{tenantId:N}:{NormalizeIdentity(identity)}";
 
-    private static string NormalizePhone(string phone)
-        => new(phone.Where(char.IsDigit).ToArray());
+    /// <summary>
+    /// Normaliza la identidad para la clave de conversación. Para teléfonos legacy se mantiene el
+    /// digit-normalize (tolera formatos/espacios). Para BSUID (contiene un punto, ej "US.123…") NO
+    /// se quitan los no-dígitos: hacerlo colisionaría "US.1349…" con un teléfono "1349…".
+    /// </summary>
+    private static string NormalizeIdentity(string identity)
+        => identity.Contains('.') ? identity : new string(identity.Where(char.IsDigit).ToArray());
 
     /// <summary>
     /// Devuelve system + últimas entradas user/assistant del historial, listos para el modelo.

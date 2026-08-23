@@ -20,8 +20,7 @@ public static class AppointmentToolDefinitions
             RescheduleAppointmentTool(),
             ConfirmAppointmentTool(),
             ListAppointmentsTool(),
-            AddToWaitlistTool(),
-            RequestHumanAttentionTool()
+            AddToWaitlistTool()
         };
     }
 
@@ -38,8 +37,7 @@ public static class AppointmentToolDefinitions
             RescheduleAppointmentToolAnthropic(),
             ConfirmAppointmentToolAnthropic(),
             ListAppointmentsToolAnthropic(),
-            AddToWaitlistToolAnthropic(),
-            RequestHumanAttentionToolAnthropic()
+            AddToWaitlistToolAnthropic()
         };
     }
 
@@ -401,53 +399,6 @@ public static class AppointmentToolDefinitions
                     estado = new { type = "string", description = "Filtrar: pending|confirmed|cancelled|completed|upcoming. Default: upcoming" }
                 },
                 required = new[] { "client_whatsapp" }
-            }
-        };
-    }
-
-    private static object RequestHumanAttentionTool()
-    {
-        return new
-        {
-            type = "function",
-            function = new
-            {
-                name = "request_human_attention",
-                description = "Escala la conversación a un asesor humano. Úsala cuando el cliente pida hablar " +
-                              "con una persona o asesor, presente un reclamo o urgencia, o su solicitud no se pueda " +
-                              "resolver con las herramientas disponibles. Tras escalar, informa que un asesor se " +
-                              "comunicará pronto y termina el turno.",
-                parameters = new
-                {
-                    type = "object",
-                    properties = new
-                    {
-                        motivo = new
-                        {
-                            type = "string",
-                            description = "Motivo o resumen de por qué se escala (lo que pide/necesita el cliente)"
-                        }
-                    },
-                    required = new[] { "motivo" }
-                }
-            }
-        };
-    }
-
-    private static object RequestHumanAttentionToolAnthropic()
-    {
-        return new
-        {
-            name = "request_human_attention",
-            description = "Escala la conversación a un asesor humano (cliente lo pide, reclamo, urgencia o solicitud no resoluble).",
-            input_schema = new
-            {
-                type = "object",
-                properties = new
-                {
-                    motivo = new { type = "string", description = "Motivo o resumen de por qué se escala" }
-                },
-                required = new[] { "motivo" }
             }
         };
     }

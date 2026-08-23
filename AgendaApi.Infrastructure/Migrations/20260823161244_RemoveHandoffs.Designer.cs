@@ -4,6 +4,7 @@ using AgendaApi.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace AgendaApi.Infrastructure.Migrations
 {
     [DbContext(typeof(AgendaDbContext))]
-    partial class AgendaDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260823161244_RemoveHandoffs")]
+    partial class RemoveHandoffs
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -355,16 +358,6 @@ namespace AgendaApi.Infrastructure.Migrations
                         .HasColumnType("datetime2")
                         .HasColumnName("ultima_interaccion");
 
-                    b.Property<string>("UserId")
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)")
-                        .HasColumnName("user_id");
-
-                    b.Property<string>("Username")
-                        .HasMaxLength(150)
-                        .HasColumnType("nvarchar(150)")
-                        .HasColumnName("username");
-
                     b.Property<string>("WhatsApp")
                         .IsRequired()
                         .HasMaxLength(20)
@@ -374,12 +367,7 @@ namespace AgendaApi.Infrastructure.Migrations
                     b.HasKey("IdClient");
 
                     b.HasIndex("IdTenant", "WhatsApp")
-                        .IsUnique()
-                        .HasFilter("[whatsapp] <> ''");
-
-                    b.HasIndex("IdTenant", "UserId")
-                        .IsUnique()
-                        .HasFilter("[user_id] IS NOT NULL");
+                        .IsUnique();
 
                     b.ToTable("clients", (string)null);
                 });
@@ -409,8 +397,8 @@ namespace AgendaApi.Infrastructure.Migrations
 
                     b.Property<string>("PhoneCliente")
                         .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
                         .HasColumnName("phone_cliente");
 
                     b.Property<string>("Role")

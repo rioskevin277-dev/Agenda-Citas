@@ -7,7 +7,6 @@ namespace AgendaApi.Infrastructure.Services;
 /// Estado estructurado por conversación (misma clave tenantId:phone que la memoria de
 /// conversación), separado del historial. En memoria con expiración de 24h. Guarda:
 /// - la reserva que el cliente dejó a medio agendar (para retomarla, P3)
-/// El estado del handoff a humano NO vive acá: pasó a la tabla handoffs (durable, ver HandoffService).
 /// </summary>
 public class ConversationStateService
 {

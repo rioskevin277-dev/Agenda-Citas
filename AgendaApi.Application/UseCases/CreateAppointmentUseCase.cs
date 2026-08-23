@@ -185,7 +185,7 @@ public class CreateAppointmentUseCase
             var mensaje = appointment.Estado == "confirmed"
                 ? $"✅ Cita confirmada: {serviceType.Nombre}{profStr}\n📅 {fechaStr}\nGracias por agendar. Si necesitas cambiar o cancelar, avísame."
                 : $"📅 Cita agendada: {serviceType.Nombre}{profStr}\n📅 {fechaStr} — PENDIENTE de confirmación.\nResponde CONFIRMAR para confirmarla, o escríbenos para cambiar o cancelar.";
-            await _messagingProvider.SendTextAsync(client.WhatsApp, mensaje, ct);
+            await _messagingProvider.SendTextAsync(client.PartnerDestination, mensaje, ct);
         }
         catch
         {

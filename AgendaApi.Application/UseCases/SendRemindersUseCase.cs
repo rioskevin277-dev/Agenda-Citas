@@ -92,7 +92,7 @@ public class SendRemindersUseCase
                     continue;
 
                 var client = await _clientRepo.GetByIdAsync(appointment.IdClient, ct);
-                if (client == null || string.IsNullOrWhiteSpace(client.WhatsApp))
+                if (client == null || string.IsNullOrWhiteSpace(client.PartnerDestination))
                     continue;
 
                 _tenantContext.SetTenant(
@@ -148,7 +148,7 @@ public class SendRemindersUseCase
         {
             try
             {
-                wamId = await _messagingProvider.SendTemplateAsync(client.WhatsApp, templateName,
+                wamId = await _messagingProvider.SendTemplateAsync(client.PartnerDestination, templateName,
                     new Dictionary<string, string>
                     {
                         ["1"] = string.IsNullOrWhiteSpace(client.Nombre) ? "Hola" : client.Nombre,
@@ -161,11 +161,11 @@ public class SendRemindersUseCase
                 error = $"Template {templateName}: {ex.Message}";
             }
         }
-        else if (_conversationSession.HasActiveSession(appointment.IdTenant, client.WhatsApp))
+        else if (_conversationSession.HasActiveSession(appointment.IdTenant, client.UserId ?? client.WhatsApp))
         {
             try
             {
-                wamId = await _messagingProvider.SendTextAsync(client.WhatsApp, BuildText(etapa, horas, appointment), ct);
+                wamId = await _messagingProvider.SendTextAsync(client.PartnerDestination, BuildText(etapa, horas, appointment), ct);
             }
             catch (Exception ex)
             {

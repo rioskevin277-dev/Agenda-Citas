@@ -39,7 +39,6 @@ public static class ToolActionSummarizer
                 "list_appointments" => success
                     ? $"Consultó las citas del cliente: {IntField(root, "total")} encontrada(s)."
                     : $"Fallo al listar citas: {error ?? "sin detalle"}",
-                "request_human_attention" => "Solicitó atención humana (inicio del escalado).",
                 _ => $"Ejecutó la herramienta {toolName}."
             };
         }

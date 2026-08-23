@@ -74,7 +74,8 @@ public class ClientController : ControllerBase
             return NotFound(new { error = "Cliente no encontrado" });
 
         var appointments = await _appointmentRepo.GetByClientIdAsync(client.IdClient, ct);
-        var conversations = await _conversationRepo.GetRecentAsync(_tenantContext.TenantId, client.WhatsApp, 20, ct);
+        // La conversación se keyea por la identidad canónica del cliente (BSUID si lo tiene, si no teléfono).
+        var conversations = await _conversationRepo.GetRecentAsync(_tenantContext.TenantId, client.UserId ?? client.WhatsApp, 20, ct);
 
         return Ok(new
         {
@@ -85,6 +86,8 @@ public class ClientController : ControllerBase
                 client.Nombre,
                 client.Email,
                 client.WhatsApp,
+                client.UserId,
+                client.Username,
                 client.Estado,
                 client.Tags,
                 client.Notas,

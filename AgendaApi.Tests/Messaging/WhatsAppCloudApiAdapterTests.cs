@@ -167,6 +167,255 @@ public class WhatsAppCloudApiAdapterTests
         result.Should().Contain("wamid");
     }
 
+    // ─── BSUID / global usernames (webhook sin teléfono) ─────────────────────────────
+
+    /// <summary>
+    /// Con global usernames el webhook llega SÓLO con BSUID (contacts[].user_id) y username,
+    /// sin wa_id/from. El adaptador debe usar el BSUID como identidad canónica (From/UserId)
+    /// y dejar el teléfono null, sin fallar por no tener número.
+    /// </summary>
+    [Fact]
+    public async Task ParseWebhookPayload_BsIdOnly_NoPhone_ExtractsUserId()
+    {
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(new MediaDownloadHandler()),
+            new Mock<ITenantContext>().Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        var message = new Dictionary<string, object?>
+        {
+            ["id"] = "wamid.BSID",
+            ["type"] = "text",
+            ["text"] = new { body = "Hola" }
+        };
+        // Sin wa_id: only user_id + profile.username.
+        var contacts = new object[]
+        {
+            new { profile = new { name = "Juan Pérez", username = "juan.perez" }, user_id = "US.13491208655302741918" }
+        };
+
+        var msgs = await adapter.ParseWebhookPayloadAsync(BuildPayload(message, contacts));
+
+        msgs.Should().HaveCount(1);
+        msgs[0].UserId.Should().Be("US.13491208655302741918");
+        msgs[0].From.Should().Be("US.13491208655302741918");
+        msgs[0].Phone.Should().BeNull();
+        msgs[0].Username.Should().Be("juan.perez");
+        msgs[0].Content.Should().Be("Hola");
+    }
+
+    [Fact]
+    public async Task ParseWebhookPayload_BsIdAndPhone_PopulatesBoth()
+    {
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(new MediaDownloadHandler()),
+            new Mock<ITenantContext>().Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        var message = new Dictionary<string, object?>
+        {
+            ["id"] = "wamid.BOTH",
+            ["type"] = "text",
+            ["from"] = "573223697115",
+            ["text"] = new { body = "Hola" }
+        };
+        var contacts = new object[]
+        {
+            new { profile = new { name = "Juan Pérez", username = "juan.perez" }, user_id = "US.13491208655302741918", wa_id = "573223697115" }
+        };
+
+        var msgs = await adapter.ParseWebhookPayloadAsync(BuildPayload(message, contacts));
+
+        msgs.Should().HaveCount(1);
+        // La identidad CANÓNICA es el BSUID cuando viene; el teléfono se conserva como fallback/display.
+        msgs[0].UserId.Should().Be("US.13491208655302741918");
+        msgs[0].Phone.Should().Be("573223697115");
+        msgs[0].From.Should().Be("US.13491208655302741918");
+    }
+
+    /// <summary>
+    /// Meta Cloud API NO acepta "recipient" (rechaza el payload con 400 "Invalid parameter"), y el
+    /// BSUID (user_id CC.xxx) no es un destino de envío. El destinatario siempre llega resuelto a
+    /// teléfono o username global, que se envía con el campo "to".
+    /// </summary>
+    [Fact]
+    public async Task SendTextAsync_Username_SendsToField()
+    {
+        Environment.SetEnvironmentVariable("WhatsApp__AccessToken", "test-token");
+        var context = new Mock<ITenantContext>();
+        context.Setup(c => c.IsSet).Returns(true);
+        context.Setup(c => c.PhoneNumberId).Returns("123456789");
+        context.Setup(c => c.WhatsAppAccessToken).Returns("test-token");
+
+        var handler = new SendCaptureHandler();
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(handler),
+            context.Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        var result = await adapter.SendTextAsync("juan.perez", "Hola", CancellationToken.None);
+
+        handler.RequestBody.Should().Contain("\"to\":\"juan.perez\"");
+        handler.RequestBody.Should().NotContain("\"recipient\"");
+        result.Should().NotBeNull();
+    }
+
+    /// <summary>Sin teléfono ni username no hay destino válido: se omite el envío y no se llama a Graph.</summary>
+    [Fact]
+    public async Task SendTextAsync_EmptyRecipient_DoesNotCallGraph()
+    {
+        Environment.SetEnvironmentVariable("WhatsApp__AccessToken", "test-token");
+        var context = new Mock<ITenantContext>();
+        context.Setup(c => c.IsSet).Returns(true);
+        context.Setup(c => c.PhoneNumberId).Returns("123456789");
+        context.Setup(c => c.WhatsAppAccessToken).Returns("test-token");
+
+        var handler = new SendCaptureHandler();
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(handler),
+            context.Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        var result = await adapter.SendTextAsync("", "Hola", CancellationToken.None);
+
+        handler.Sent.Should().BeFalse();
+        result.Should().BeNull();
+    }
+
+    /// <summary>Regresión: a un teléfono E.164 se le envía el campo "to" (nunca "recipient").</summary>
+    [Fact]
+    public async Task SendTextAsync_Phone_DoesNotUseRecipientField()
+    {
+        Environment.SetEnvironmentVariable("WhatsApp__AccessToken", "test-token");
+        var context = new Mock<ITenantContext>();
+        context.Setup(c => c.IsSet).Returns(true);
+        context.Setup(c => c.PhoneNumberId).Returns("123456789");
+        context.Setup(c => c.WhatsAppAccessToken).Returns("test-token");
+
+        var handler = new SendCaptureHandler();
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(handler),
+            context.Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        var result = await adapter.SendTextAsync("573223697115", "Hola", CancellationToken.None);
+
+        handler.RequestBody.Should().Contain("\"to\":\"573223697115\"");
+        handler.RequestBody.Should().NotContain("\"recipient\"");
+        result.Should().NotBeNull();
+    }
+
+    /// <summary>
+    /// System message user_changed_number / user_changed_user_id: se expone el tipo y la
+    /// transición previous_user_id → user_id para reasignar el client (continuidad).
+    /// </summary>
+    [Fact]
+    public async Task ParseWebhookPayload_SystemUserChangedId_ReturnsSystemMessage()
+    {
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(new MediaDownloadHandler()),
+            new Mock<ITenantContext>().Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        var message = new Dictionary<string, object?>
+        {
+            ["id"] = "wamid.SYSTEM",
+            ["type"] = "system",
+            ["system"] = new { type = "user_changed_user_id", user_id = "US.NEW123", previous_user_id = "US.OLD456" }
+        };
+        var contacts = new object[] { new { profile = new { name = "Juan" } } };
+
+        var msgs = await adapter.ParseWebhookPayloadAsync(BuildPayload(message, contacts));
+
+        msgs.Should().HaveCount(1);
+        msgs[0].Type.Should().Be("system");
+        msgs[0].SystemType.Should().Be("user_changed_user_id");
+        msgs[0].UserId.Should().Be("US.NEW123");
+        msgs[0].PreviousUserId.Should().Be("US.OLD456");
+    }
+
+    /// <summary>
+    /// Respuesta al botón request_contact_info: webhook type=="contacts", origin=="contact_request",
+    /// teléfono en messages[].contacts[].phones[].phone. Se extrae para guardarlo en el client.
+    /// </summary>
+    [Fact]
+    public async Task ParseWebhookPayload_ContactsContactRequest_ExtractsPhone()
+    {
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(new MediaDownloadHandler()),
+            new Mock<ITenantContext>().Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        var message = new Dictionary<string, object?>
+        {
+            ["id"] = "wamid.CONTACT",
+            ["type"] = "contacts",
+            ["origin"] = "contact_request",
+            ["contacts"] = new object[]
+            {
+                new { profile = new { name = "Juan" }, wa_id = "573223697115", phones = new object[] { new { phone = "573223697115", type = "CELL" } } }
+            }
+        };
+        var contacts = new object[] { new { profile = new { name = "Juan" }, user_id = "US.13491208655302741918" } };
+
+        var msgs = await adapter.ParseWebhookPayloadAsync(BuildPayload(message, contacts));
+
+        msgs.Should().HaveCount(1);
+        msgs[0].Type.Should().Be("contacts");
+        msgs[0].Phone.Should().Be("573223697115");
+        msgs[0].UserId.Should().Be("US.13491208655302741918");
+    }
+
+    /// <summary>El botón request_contact_info se construye en el payload interactive.</summary>
+    [Fact]
+    public async Task SendContactRequestAsync_BuildsContactRequestButton()
+    {
+        Environment.SetEnvironmentVariable("WhatsApp__AccessToken", "test-token");
+        var context = new Mock<ITenantContext>();
+        context.Setup(c => c.IsSet).Returns(true);
+        context.Setup(c => c.PhoneNumberId).Returns("123456789");
+        context.Setup(c => c.WhatsAppAccessToken).Returns("test-token");
+
+        var handler = new SendCaptureHandler();
+        var adapter = new WhatsAppCloudApiAdapter(
+            new FakeHttpClientFactory(handler),
+            context.Object,
+            NullLogger<WhatsAppCloudApiAdapter>.Instance);
+
+        await adapter.SendContactRequestAsync("573223697115", "Para enviarte recordatorios");
+
+        handler.RequestBody.Should().Contain("\"type\":\"interactive\"");
+        handler.RequestBody.Should().Contain("\"request_contact_info\":true");
+        handler.RequestBody.Should().Contain("REQUEST_CONTACT");
+        handler.RequestBody.Should().Contain("\"to\":\"573223697115\"");
+        handler.RequestBody.Should().NotContain("\"recipient\"");
+    }
+
+    /// <summary>Envuelve un mensaje + contactos en el payload típico de webhook de Meta.</summary>
+    private static object BuildPayload(object message, object contacts)
+        => new
+        {
+            entry = new object[]
+            {
+                new
+                {
+                    changes = new object[]
+                    {
+                        new
+                        {
+                            value = new
+                            {
+                                messaging_product = "whatsapp",
+                                metadata = new { phone_number_id = "123456789" },
+                                contacts,
+                                messages = new object[] { message }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
     /// <summary>Construye un payload de webhook típico de Meta con un solo mensaje.</summary>
     private static object BuildWebhookPayload(string from, string contactWaId)
     {

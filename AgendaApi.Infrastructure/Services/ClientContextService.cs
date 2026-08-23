@@ -33,37 +33,24 @@ public class ClientContextService
     }
 
     /// <summary>
-    /// Compila el contexto CRM del cliente para la IA. Si el cliente no existe aún en la
-    /// BD, lo crea (es su primer contacto) con estado 'nuevo' y devuelve el bloque de
-    /// contexto base. Si existe, actualiza UltimaInteraccion y recalcula estado/proxima cita.
+    /// Compila el contexto CRM del cliente para la IA. Resuelve (o crea) el cliente por su
+    /// identificador canónico — BSUID (userId) primero, teléfono como fallback para clientes
+    /// legacy — y devuelve el bloque de contexto base (o el historial si ya existe).
     /// </summary>
     public async Task<string> BuildClientContextAsync(
         Guid tenantId,
-        string whatsapp,
+        string userId,
         CancellationToken ct = default,
-        string? clientName = null)
+        string? clientName = null,
+        string? phone = null,
+        string? username = null)
     {
-        var client = await _clientRepo.GetByWhatsAppAsync(whatsapp, tenantId, ct);
+        var (client, created) = await ResolveOrCreateAsync(tenantId, userId, ct, clientName, phone, username);
 
-        if (client == null)
-        {
-            // Primer contacto: se crea el cliente con estado 'nuevo' para que quede en el CRM.
-            // Si el webhook trae el nombre del perfil de WhatsApp, se persiste (personalización).
-            var nuevo = new Client
-            {
-                IdClient = Guid.NewGuid(),
-                IdTenant = tenantId,
-                WhatsApp = whatsapp,
-                Nombre = string.IsNullOrWhiteSpace(clientName) ? null : clientName,
-                Estado = "nuevo",
-                Activo = true,
-                UltimaInteraccion = DateTime.UtcNow
-            };
-            await _clientRepo.CreateAsync(nuevo, ct);
-            await _unitOfWork.SaveChangesAsync(ct);
-            _logger.LogInformation("[CRM] Cliente {Whatsapp} creado (nuevo) en tenant {Tenant}", whatsapp, tenantId);
-            return BuildBlock(nuevo, new List<Appointment>(), 0, DateTime.UtcNow);
-        }
+        // Cliente recién creado (resolución marcada): ya se guardó en BD, devolvemos el bloque base
+        // sin gastar una query de historial (no tiene citas).
+        if (created)
+            return BuildBlock(client, new List<Appointment>(), 0, DateTime.UtcNow);
 
         // Actualizar la interacción del cliente cada vez que escribe.
         client.UltimaInteraccion = DateTime.UtcNow;
@@ -84,6 +71,127 @@ public class ClientContextService
         await _unitOfWork.SaveChangesAsync(ct);
 
         return BuildBlock(client, appointments, appointments.Count, DateTime.UtcNow);
+    }
+
+    /// <summary>
+    /// Resuelve el cliente por su identificador canónico o lo crea. Orden:
+    /// 1) por BSUID (userId); 2) si no y hay teléfono, por teléfono legacy y se le VINCULA el
+    /// userId (la misma persona migró de teléfono a BSUID: mantenemos su historial); 3) si no,
+    /// se crea como 'nuevo'. Devuelve <c>(client, created)</c>.
+    /// </summary>
+    public async Task<(Client Client, bool Created)> ResolveOrCreateAsync(
+        Guid tenantId,
+        string userId,
+        CancellationToken ct = default,
+        string? clientName = null,
+        string? phone = null,
+        string? username = null)
+    {
+        Client? client = null;
+
+        if (!string.IsNullOrWhiteSpace(userId))
+            client = await _clientRepo.GetByUserIdAsync(userId, tenantId, ct);
+
+        if (client == null && !string.IsNullOrWhiteSpace(phone))
+        {
+            client = await _clientRepo.GetByWhatsAppAsync(phone, tenantId, ct);
+            if (client != null && !string.IsNullOrWhiteSpace(userId) && client.UserId != userId)
+            {
+                // Merge legacy → BSUID: vinculamos el user_id al cliente que ya existía por teléfono.
+                client.UserId = userId;
+                client.FechaActualizacion = DateTime.UtcNow;
+                await _clientRepo.UpdateAsync(client, ct);
+                await _unitOfWork.SaveChangesAsync(ct);
+                _logger.LogInformation("[CRM] Cliente {Phone} vinculado a BSUID {UserId} (tenant {Tenant})",
+                    phone, userId, tenantId);
+            }
+        }
+
+        if (client == null)
+        {
+            client = new Client
+            {
+                IdClient = Guid.NewGuid(),
+                IdTenant = tenantId,
+                UserId = string.IsNullOrWhiteSpace(userId) ? null : userId,
+                WhatsApp = phone ?? "",
+                Username = string.IsNullOrWhiteSpace(username) ? null : username,
+                Nombre = string.IsNullOrWhiteSpace(clientName) ? null : clientName,
+                Estado = "nuevo",
+                Activo = true,
+                UltimaInteraccion = DateTime.UtcNow
+            };
+            await _clientRepo.CreateAsync(client, ct);
+            await _unitOfWork.SaveChangesAsync(ct);
+            _logger.LogInformation("[CRM] Cliente {Partner} creado (nuevo) en tenant {Tenant}",
+                client.PartnerId, tenantId);
+            return (client, true);
+        }
+
+        // Persistir username si el webhook lo trae y el cliente no lo tenía.
+        if (!string.IsNullOrWhiteSpace(username) && client.Username != username)
+        {
+            client.Username = username;
+            client.FechaActualizacion = DateTime.UtcNow;
+            await _clientRepo.UpdateAsync(client, ct);
+            await _unitOfWork.SaveChangesAsync(ct);
+        }
+
+        return (client, false);
+    }
+
+    /// <summary>
+    /// Continuidad de conversación ante system message user_changed_number / user_changed_user_id:
+    /// el usuario cambió su BSUID (previous_user_id → user_id). Reasigna el client para no perder
+    /// su historial de citas ni la conversación.
+    /// </summary>
+    public async Task HandleUserChangedIdAsync(Guid tenantId, string newUserId, string previousUserId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(newUserId) || string.IsNullOrWhiteSpace(previousUserId))
+            return;
+
+        var client = await _clientRepo.GetByUserIdAsync(previousUserId, tenantId, ct);
+        if (client == null)
+        {
+            _logger.LogInformation("[CRM] user_changed sin client previo {Prev} (tenant {Tenant}): nada que reasignar",
+                previousUserId, tenantId);
+            return;
+        }
+
+        client.UserId = newUserId;
+        client.FechaActualizacion = DateTime.UtcNow;
+        await _clientRepo.UpdateAsync(client, ct);
+        await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("[CRM] Cliente reasignado de BSUID {Prev} a {New} (tenant {Tenant})",
+            previousUserId, newUserId, tenantId);
+    }
+
+    /// <summary>
+    /// Almacena el teléfono compartido por el usuario (respuesta al botón request_contact_info;
+    /// webhook type=="contacts", origin=="contact_request"). Complementa al client con su número.
+    /// </summary>
+    public async Task StoreSharedPhoneAsync(Guid tenantId, string userId, string phone, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(phone))
+            return;
+
+        var client = await _clientRepo.GetByUserIdAsync(userId, tenantId, ct);
+        if (client == null)
+        {
+            _logger.LogInformation("[CRM] Teléfono compartido por client {UserId} no existente (tenant {Tenant}): se omite",
+                userId, tenantId);
+            return;
+        }
+
+        if (client.WhatsApp == phone)
+            return;
+
+        client.WhatsApp = phone;
+        client.FechaActualizacion = DateTime.UtcNow;
+        await _clientRepo.UpdateAsync(client, ct);
+        await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("[CRM] Teléfono {Phone} guardado para client {UserId} (tenant {Tenant})",
+            phone, userId, tenantId);
     }
 
     private static string BuildBlock(Client client, List<Appointment> appointments, int totalCitas, DateTime now)
@@ -122,7 +230,7 @@ public class ClientContextService
         return @"
 
 CONTEXTO DEL CLIENTE (CRM — memoria operativa, úsalo para personalizar la atención):
-- Identidad: " + (string.IsNullOrWhiteSpace(client.Nombre) ? "(sin nombre registrado)" : client.Nombre) + @" (" + client.WhatsApp + @")
+- Identidad: " + (string.IsNullOrWhiteSpace(client.Nombre) ? "(sin nombre registrado)" : client.Nombre) + @" (" + client.PartnerId + @")
 - Estado del cliente: " + ClientStateCalculator.TraducirEstado(client.Estado) + @"
 - Etiquetas: " + tags + @"
 - Notas: " + notas + @"

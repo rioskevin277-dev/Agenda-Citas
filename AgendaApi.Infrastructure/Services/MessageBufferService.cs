@@ -61,6 +61,9 @@ public class MessageBufferService : BackgroundService
         string? mediaId,
         string? mediaType,
         Guid tenantId,
+        string? userId = null,
+        string? phone = null,
+        string? username = null,
         CancellationToken ct = default)
     {
         var evt = new IncomingMessageEvent
@@ -72,6 +75,9 @@ public class MessageBufferService : BackgroundService
             MediaId = mediaId,
             MediaType = mediaType,
             TenantId = tenantId,
+            UserId = userId,
+            Phone = phone,
+            Username = username,
             ReceivedAt = DateTime.UtcNow
         };
 
@@ -185,6 +191,12 @@ public class MessageBufferService : BackgroundService
             var clientName = lastMsg.FromName;
             var receivedAt = lastMsg.ReceivedAt;
 
+            // Identidad canónica (From) + datos opcionales del webhook (BSUID/teléfono/username)
+            // para que el orquestador responda a la identidad correcta sin perder contexto CRM.
+            var userId = lastMsg.UserId;
+            var phone = lastMsg.Phone;
+            var username = lastMsg.Username;
+
             // Transcripción de audios: si el cliente envió uno o más audios, se descargan,
             // se transcriben (Groq Whisper) y el texto reemplaza el placeholder "[audio]"
             // para que el flujo los trate como mensajes escritos.
@@ -204,7 +216,7 @@ public class MessageBufferService : BackgroundService
             var fullContent = string.Join("\n", ordered.Select(m => m.Content));
 
             // Intento inicial (failedAttempts=0 ⇒ aun no ha fallado ninguno).
-            await ProcessAndMaybeRetryAsync(from, fullContent, tenantId, clientName, receivedAt, failedAttempts: 0, ct);
+            await ProcessAndMaybeRetryAsync(from, fullContent, tenantId, clientName, receivedAt, failedAttempts: 0, userId, phone, username, ct);
         }
         catch (Exception ex)
         {
@@ -225,21 +237,14 @@ public class MessageBufferService : BackgroundService
         string? clientName,
         DateTime receivedAt,
         int failedAttempts,
+        string? userId,
+        string? phone,
+        string? username,
         CancellationToken ct)
     {
         try
         {
             using var scope = _scopeFactory.CreateScope();
-
-            var handoffService = scope.ServiceProvider.GetRequiredService<HandoffService>();
-            var ownerResult = await handoffService.HandleOwnerReplyAsync(tenantId, from, fullContent, ct);
-            if (ownerResult is HandoffService.OwnerReplyResult.Forwarded
-                or HandoffService.OwnerReplyResult.ChatClosed)
-            {
-                _logger.LogInformation("[Buffer] Mensaje del asesor consumido para {Tenant}: {Result}",
-                    tenantId, ownerResult);
-                return;
-            }
 
             var orchestrator = scope.ServiceProvider.GetRequiredService<ChatOrchestratorService>();
 
@@ -253,7 +258,7 @@ public class MessageBufferService : BackgroundService
             using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeg));
             using var responseCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
 
-            await orchestrator.ProcessMessageAsync(from, fullContent, tenantId, responseCts.Token, clientName);
+            await orchestrator.ProcessMessageAsync(from, fullContent, tenantId, responseCts.Token, clientName, phone, username);
         }
         catch (Exception ex)
         {
@@ -289,7 +294,9 @@ public class MessageBufferService : BackgroundService
 
             _logger.LogInformation("[Buffer] Reintento #{Attempt}/{Max} de {From}",
                 item.Attempt, _retryService.MaxRetries + 1, item.Key);
-            _ = ProcessAndMaybeRetryAsync(item.Key, item.Content, item.TenantId, item.ClientName, item.ReceivedAt, item.Attempt - 1, _shutdownToken);
+            // En un reintento no se reenvían userId/phone/username (no están en MessageRetryItem): el
+// orquestador resuelve por la identidad canónica (item.Key = From) y responde a esa identidad.
+_ = ProcessAndMaybeRetryAsync(item.Key, item.Content, item.TenantId, item.ClientName, item.ReceivedAt, item.Attempt - 1, null, null, null, _shutdownToken);
         }
     }
 
@@ -356,7 +363,7 @@ public class MessageBufferService : BackgroundService
             if (string.IsNullOrWhiteSpace(mediaId))
                 return null;
 
-            // La descarga exige el contexto de tenant (access token + phone id), igual que HandoffService.
+            // La descarga exige el contexto de tenant (access token + phone id).
             var tenantRepo = scope.ServiceProvider.GetRequiredService<ITenantRepository>();
             var tenantContext = scope.ServiceProvider.GetRequiredService<ITenantContext>();
             var tenant = await tenantRepo.GetByIdAsync(tenantId, ct);
@@ -405,6 +412,9 @@ public class MessageBufferService : BackgroundService
         public string? MediaId { get; set; }
         public string? MediaType { get; set; }
         public Guid TenantId { get; set; }
+        public string? UserId { get; set; }
+        public string? Phone { get; set; }
+        public string? Username { get; set; }
         public DateTime ReceivedAt { get; set; }
     }
 

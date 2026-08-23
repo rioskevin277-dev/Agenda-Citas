@@ -74,6 +74,34 @@ public class WebhookController : ControllerBase
 
                 msg.TenantId = tenant.IdTenant;
 
+                // System messages (user_changed_number / user_changed_user_id): Meta avisa que el
+                // usuario cambió su BSUID. Se reasigna el client para no perder historial (no es un
+                // turno de chat, así que no se encola al bot).
+                if (msg.Type == "system" && msg.SystemType is "user_changed_number" or "user_changed_user_id")
+                {
+                    using (var scope = _scopeFactory.CreateScope())
+                    {
+                        var crm = scope.ServiceProvider.GetRequiredService<ClientContextService>();
+                        await crm.HandleUserChangedIdAsync(tenant.IdTenant, msg.UserId ?? "", msg.PreviousUserId ?? "");
+                    }
+                    _logger.LogInformation("[Webhook] System {SysType}: user {Prev}→{New} reasignado (tenant {Tenant})",
+                        msg.SystemType, msg.PreviousUserId, msg.UserId, tenant.IdTenant);
+                    continue;
+                }
+
+                // Contacto compartido (respuesta al botón request_contact_info): guardar el teléfono.
+                if (msg.Type == "contacts" && !string.IsNullOrWhiteSpace(msg.Phone))
+                {
+                    using (var scope = _scopeFactory.CreateScope())
+                    {
+                        var crm = scope.ServiceProvider.GetRequiredService<ClientContextService>();
+                        await crm.StoreSharedPhoneAsync(tenant.IdTenant, msg.UserId ?? "", msg.Phone!);
+                    }
+                    _logger.LogInformation("[Webhook] Teléfono {Phone} compartido por user {UserId} (tenant {Tenant})",
+                        msg.Phone, msg.UserId, tenant.IdTenant);
+                    continue;
+                }
+
                 _logger.LogInformation("[Webhook] Mensaje de {From}: {Content} (tenant: {Tenant})",
                     msg.From, msg.Content, tenant.IdTenant);
 
@@ -84,7 +112,10 @@ public class WebhookController : ControllerBase
                     msg.Content,
                     msg.MediaId,
                     msg.MediaType,
-                    msg.TenantId);
+                    msg.TenantId,
+                    msg.UserId,
+                    msg.Phone,
+                    msg.Username);
             }
 
             return Ok();

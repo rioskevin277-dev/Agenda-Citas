@@ -44,16 +44,27 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
         if (string.IsNullOrEmpty(phoneNumberId) || string.IsNullOrEmpty(accessToken))
             throw new InvalidOperationException("Configuración de WhatsApp incompleta");
 
+        // Sin teléfono ni username (solo BSUID) no hay destino válido para Meta: se omite el envío
+        // en lugar de mandar el BSUID y recibir 400. El flujo normal pasa `phone ?? username`.
+        if (string.IsNullOrWhiteSpace(to))
+        {
+            _logger.LogWarning("[Messaging] Envío sin destinatario atendible (teléfono ni username): se omite");
+            return null;
+        }
+
         var url = $"https://graph.facebook.com/v18.0/{phoneNumberId}/messages";
 
-        var payload = new
+        // Con BSUID y global usernames el destinatario llega resuelto a teléfono E.164 o username
+        // global, y Meta solo acepta el campo "to" para ambos. El BSUID (user_id CC.xxx) NO es un
+        // destino de envío válido (Meta responde 400), por eso nunca va aquí.
+        var payload = new Dictionary<string, object?>
         {
-            messaging_product = "whatsapp",
-            recipient_type = "individual",
-            to = to,
-            type = "text",
-            text = new { preview_url = false, body = message }
+            ["messaging_product"] = "whatsapp",
+            ["recipient_type"] = "individual",
+            ["type"] = "text",
+            ["text"] = new { preview_url = false, body = message }
         };
+        AddRecipientField(payload, to);
 
         var jsonContent = JsonSerializer.Serialize(payload);
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
@@ -94,13 +105,12 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
             .Select(value => (object)new { type = "text", text = value })
             .ToArray();
 
-        var payload = new
+        var payload = new Dictionary<string, object?>
         {
-            messaging_product = "whatsapp",
-            recipient_type = "individual",
-            to = to,
-            type = "template",
-            template = new
+            ["messaging_product"] = "whatsapp",
+            ["recipient_type"] = "individual",
+            ["type"] = "template",
+            ["template"] = new
             {
                 name = templateName,
                 language = new { code = "es" },
@@ -110,6 +120,7 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
                 }
             }
         };
+        AddRecipientField(payload, to);
 
         var jsonContent = JsonSerializer.Serialize(payload);
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
@@ -188,6 +199,95 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
         return null;
     }
 
+    /// <summary>
+    /// Añade el campo de destinatario "to" al payload. Meta Cloud API solo lo acepta con un
+    /// teléfono E.164 o un username global; el BSUID (user_id CC.xxx) NO es un destino válido
+    /// (HTTP 400). Los call-sites envían `phone ?? username`, nunca el user_id.
+    /// </summary>
+    private static void AddRecipientField(Dictionary<string, object?> payload, string recipient)
+    {
+        // Meta Cloud API solo acepta "to" (teléfono E.164 o username global). El BSUID (CC.xxx, con
+        // punto) NO es un destino válido: se rechaza con HTTP 400 ("Invalid parameter" / "text.body is
+        // required"). Por eso el destinatario debe llegar SIEMPRE resuelto a teléfono o username,
+        // nunca como user_id. Los call-sites envían `phone ?? username`.
+        if (string.IsNullOrWhiteSpace(recipient))
+            return;
+        payload["to"] = recipient;
+    }
+
+    public async Task<string?> SendContactRequestAsync(string recipient, string message, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(recipient))
+        {
+            _logger.LogWarning("[Messaging] Solicitud de contacto sin destinatario: se omite");
+            return null;
+        }
+
+        if (!_tenantContext.IsSet)
+            throw new InvalidOperationException("TenantContext no está configurado");
+
+        var phoneNumberId = _tenantContext.PhoneNumberId;
+        var accessToken = _tenantContext.WhatsAppAccessToken;
+
+        if (string.IsNullOrEmpty(phoneNumberId) || string.IsNullOrEmpty(accessToken))
+            throw new InvalidOperationException("Configuración de WhatsApp incompleta");
+
+        // Sin teléfono ni username (solo BSUID) no hay destino válido para Meta: se omite el envío
+        // en lugar de mandar el BSUID y recibir 400. El flujo normal pasa `phone ?? username`.
+        if (string.IsNullOrWhiteSpace(recipient))
+        {
+            _logger.LogWarning("[Messaging] Envío sin destinatario atendible (teléfono ni username): se omite");
+            return null;
+        }
+
+        var url = $"https://graph.facebook.com/v18.0/{phoneNumberId}/messages";
+
+        // Botón de solicitud de contacto (request_contact_info): pide el teléfono al usuario cuando
+        // el webhook vino solo con BSUID. Meta manda la respuesta como type=="contacts".
+        var payload = new Dictionary<string, object?>
+        {
+            ["messaging_product"] = "whatsapp",
+            ["recipient_type"] = "individual",
+            ["type"] = "interactive",
+            ["interactive"] = new
+            {
+                type = "button",
+                header = new { type = "text", text = message },
+                body = new { text = "Para enviarte recordatorios por WhatsApp, comparte tu número." },
+                action = new
+                {
+                    buttons = new Dictionary<string, object?>[]
+                    {
+                        new()
+                        {
+                            ["type"] = "reply",
+                            ["reply"] = new { id = "REQUEST_CONTACT", title = "Comparte tu teléfono" },
+                            ["request_contact_info"] = true
+                        }
+                    }
+                }
+            }
+        };
+        AddRecipientField(payload, recipient);
+
+        var jsonContent = JsonSerializer.Serialize(payload);
+        var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
+
+        _httpClient.DefaultRequestHeaders.Clear();
+        _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {accessToken}");
+
+        var response = await _httpClient.PostAsync(url, content, ct);
+        var responseBody = await response.Content.ReadAsStringAsync(ct);
+
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException($"Error WhatsApp contacto: {response.StatusCode} - {responseBody}");
+
+        if (LogGraphErrorIfPresent(responseBody, "WhatsApp contacto", recipient))
+            return null;
+
+        return ExtractWamId(responseBody);
+    }
+
     public Task<string?> VerifyWebhookAsync(string mode, string token, string challenge)
     {
         var verifyToken = Environment.GetEnvironmentVariable("WhatsApp__VerifyToken")
@@ -231,23 +331,33 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
 
                     string nombre = "Usuario";
                     string contactWaId = "";
+                    string contactUserId = "";
+                    string contactUsername = "";
                     if (value.TryGetProperty("contacts", out var contacts) && contacts.GetArrayLength() > 0)
                     {
                         var contact = contacts[0];
-                        if (contact.TryGetProperty("profile", out var profile) && profile.TryGetProperty("name", out var nameProp))
-                            nombre = nameProp.GetString() ?? "Usuario";
+                        if (contact.TryGetProperty("profile", out var profile))
+                        {
+                            if (profile.TryGetProperty("name", out var nameProp))
+                                nombre = nameProp.GetString() ?? "Usuario";
+                            if (profile.TryGetProperty("username", out var userProp))
+                                contactUsername = userProp.GetString() ?? "";
+                        }
+                        // BSUID: user_id del contacto (identificador estable, único por negocio-usuario).
+                        if (contact.TryGetProperty("user_id", out var uidProp))
+                            contactUserId = uidProp.GetString() ?? "";
+                        // Teléfono legacy (puede faltar con global usernames).
                         if (contact.TryGetProperty("wa_id", out var waIdProp))
                             contactWaId = waIdProp.GetString() ?? "";
                     }
 
                     foreach (var message in messages.EnumerateArray())
                     {
-                        var dto = ParseSingleMessage(message, phoneNumberId, nombre, contactWaId);
+                        var dto = ParseSingleMessage(message, phoneNumberId, nombre, contactWaId, contactUserId, contactUsername);
                         if (dto != null)
                         {
-                            // Diagnóstico: si un mensaje llega sin remitente identificable, la
-                            // respuesta no podrá entregarse. Se registra el JSON crudo del mensaje
-                            // para ver qué manda Meta en ese caso.
+                            // Diagnóstico: si un mensaje llega sin remitente identificable (ni BSUID ni
+                            // teléfono), la respuesta no podrá entregarse. Se registra el JSON crudo.
                             if (string.IsNullOrWhiteSpace(dto.From))
                                 _logger.LogWarning("[WhatsAppAdapter] Mensaje sin remitente identificable. message={MsgJson}",
                                     message.ToString());
@@ -290,33 +400,95 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
         return await _httpClient.GetByteArrayAsync(mediaInfo.Url, ct);
     }
 
-    private static IncomingMessage? ParseSingleMessage(JsonElement message, string phoneNumberId, string nombre, string contactWaId = "")
+    private static IncomingMessage? ParseSingleMessage(
+        JsonElement message, string phoneNumberId, string nombre, string contactWaId = "",
+        string contactUserId = "", string contactUsername = "")
     {
         try
         {
-            var externalId = message.GetProperty("id").GetString();
-            // "from" es el teléfono E.164 del remitente (WhatsApp). Aunque Meta siempre debería
-            // traerlo, se respalda sin restricciones con contacts[0].wa_id (que ES el número real
-            // del remitente) y, como último recurso, con message.wa_id. El gate IsE164Phone que
-            // había antes podía dejar el remitente vacío (y soltar la respuesta) en mensajes cuyo
-            // contactWaId viniera con formato no estrictamente de dígitos.
-            var from = message.TryGetProperty("from", out var f)
-                ? f.GetString()
-                : null;
-            if (string.IsNullOrWhiteSpace(from))
+            var externalId = message.TryGetProperty("id", out var eId) ? eId.GetString() : null;
+
+            var type = message.TryGetProperty("type", out var t) ? t.GetString() : null;
+
+            // ── System messages (cambio de número / de user_id de un usuario) ──
+            if (type == "system")
             {
-                from = !string.IsNullOrWhiteSpace(contactWaId)
+                string? previousUserId = null;
+                string? newUserId = null;
+                string? systemType = null;
+                if (message.TryGetProperty("system", out var sys))
+                {
+                    if (sys.TryGetProperty("type", out var st)) systemType = st.GetString();
+                    if (sys.TryGetProperty("user_id", out var nuid)) newUserId = nuid.GetString();
+                    if (sys.TryGetProperty("previous_user_id", out var puid)) previousUserId = puid.GetString();
+                }
+                return new IncomingMessage
+                {
+                    ExternalMessageId = externalId ?? "",
+                    From = newUserId ?? previousUserId ?? contactUserId ?? contactWaId ?? "",
+                    UserId = newUserId,
+                    PreviousUserId = previousUserId,
+                    SystemType = systemType,
+                    PhoneNumberId = phoneNumberId,
+                    Type = "system",
+                    Content = "",
+                    FromName = nombre
+                };
+            }
+
+            // ── Mensaje de contacto compartido (respuesta al botón request_contact_info) ──
+            if (type == "contacts")
+            {
+                string? sharedPhone = null;
+                bool fromContactRequest = false;
+                // El teléfono compartido llega en messages[].contacts[].phones[].phone.
+                if (message.TryGetProperty("contacts", out var mContacts) && mContacts.GetArrayLength() > 0)
+                {
+                    var first = mContacts[0];
+                    if (first.TryGetProperty("phones", out var phones) && phones.GetArrayLength() > 0
+                        && phones[0].TryGetProperty("phone", out var phoneProp))
+                        sharedPhone = phoneProp.GetString();
+                }
+                // Solo se persiste si vino de un botón request_contact_info (no un contacto reenviado).
+                if (message.TryGetProperty("origin", out var origin) && origin.GetString() == "contact_request")
+                    fromContactRequest = true;
+
+                return new IncomingMessage
+                {
+                    ExternalMessageId = externalId ?? "",
+                    From = contactUserId ?? contactWaId ?? "",
+                    UserId = contactUserId,
+                    Phone = fromContactRequest ? sharedPhone : null,
+                    PhoneNumberId = phoneNumberId,
+                    Type = fromContactRequest ? "contacts" : "unknown",
+                    Content = sharedPhone ?? "",
+                    FromName = nombre
+                };
+            }
+
+            // ── Mensajes normales (text/imagen/audio/...) ──
+            // "from"/"wa_id" es el teléfono E.164 del remitente. Puede faltar con global usernames:
+            // se respalda con contacts[0].wa_id; el identificador CANÓNICO (From) es el BSUID si vino.
+            var phone = message.TryGetProperty("from", out var f) ? f.GetString() : null;
+            if (string.IsNullOrWhiteSpace(phone))
+            {
+                phone = !string.IsNullOrWhiteSpace(contactWaId)
                     ? contactWaId
                     : (message.TryGetProperty("wa_id", out var w) ? w.GetString() : null);
             }
-            from ??= "";
-            var type = message.GetProperty("type").GetString();
+            phone ??= "";
+            // user_id del propio mensaje (fallback de Meta): precedence => from_user_id > contacts[].user_id.
+            var messageUserId = message.TryGetProperty("from_user_id", out var fuid) && !string.IsNullOrWhiteSpace(fuid.GetString())
+                ? fuid.GetString()
+                : contactUserId;
             string? mediaId = null;
             string? mediaType = null;
 
             string content = type switch
             {
-                "text" => message.GetProperty("text").GetProperty("body").GetString() ?? "",
+                "text" => message.TryGetProperty("text", out var txt) && txt.TryGetProperty("body", out var b)
+                            ? b.GetString() ?? ""
+                            : "",
                 "image" => message.TryGetProperty("image", out var img) && img.TryGetProperty("caption", out var cap)
                             ? cap.GetString() ?? "[imagen]"
                             : "[imagen]",
@@ -336,12 +508,16 @@ public class WhatsAppCloudApiAdapter : IMessagingProvider
                 // Media URL se obtiene por separado vía DownloadMediaAsync
             }
 
+            var canonicalFrom = !string.IsNullOrWhiteSpace(messageUserId) ? messageUserId! : phone!;
             return new IncomingMessage
             {
-                ExternalMessageId = externalId!,
-                From = from!,
+                ExternalMessageId = externalId ?? "",
+                From = canonicalFrom,
+                UserId = string.IsNullOrWhiteSpace(messageUserId) ? null : messageUserId,
+                Phone = string.IsNullOrWhiteSpace(phone) ? null : phone!,
+                Username = string.IsNullOrWhiteSpace(contactUsername) ? null : contactUsername,
                 PhoneNumberId = phoneNumberId,
-                Type = type!,
+                Type = type ?? "",
                 Content = content,
                 FromName = nombre,
                 MediaId = mediaId,

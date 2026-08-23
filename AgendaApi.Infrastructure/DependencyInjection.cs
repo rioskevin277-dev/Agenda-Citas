@@ -128,10 +128,6 @@ public static class DependencyInjection
         services.AddScoped<ClientContextService>();
         services.AddScoped<IConversationHistoryRepository, ConversationHistoryRepository>();
 
-        // Handoff a asesor humano: ticket durable en BD + canal del asesor por WhatsApp
-        services.AddScoped<IHandoffRepository, HandoffRepository>();
-        services.AddScoped<HandoffService>();
-
         services.AddScoped<ChatOrchestratorService>();
 
         return services;

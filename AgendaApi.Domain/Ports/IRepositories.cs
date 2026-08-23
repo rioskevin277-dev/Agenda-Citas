@@ -132,7 +132,10 @@ public interface IAppointmentRepository
 /// </summary>
 public interface IClientRepository
 {
-    Task<Client?> GetByWhatsAppAsync(string whatsapp, Guid tenantId, CancellationToken ct = default);
+    /// <summary>Busca por identificador canónico: BSUID (UserId) o teléfono (WhatsApp).</summary>
+    Task<Client?> GetByWhatsAppAsync(string identifier, Guid tenantId, CancellationToken ct = default);
+    /// <summary>Busca por BSUID (user_id de Meta).</summary>
+    Task<Client?> GetByUserIdAsync(string userId, Guid tenantId, CancellationToken ct = default);
     Task<Client?> GetByIdAsync(Guid id, CancellationToken ct = default);
     Task<Client> CreateAsync(Client client, CancellationToken ct = default);
     Task UpdateAsync(Client client, CancellationToken ct = default);
@@ -150,27 +153,6 @@ public interface IReminderLogRepository
     Task<ReminderLog?> GetByWamIdAsync(string wamId, CancellationToken ct = default);
     Task AddAsync(ReminderLog log, CancellationToken ct = default);
     Task UpdateAsync(ReminderLog log, CancellationToken ct = default);
-}
-
-/// <summary>
-/// Puerto para los tickets de escalado a humano (handoff) por conversación.
-/// </summary>
-public interface IHandoffRepository
-{
-    /// <summary>Handoff abierto (HumanPending o HumanActive) de la conversación, si existe.</summary>
-    Task<Handoff?> GetOpenByPhoneAsync(Guid tenantId, string phoneCliente, CancellationToken ct = default);
-
-    /// <summary>Último ticket de la conversación (para auditoría, exista o no uno abierto).</summary>
-    Task<Handoff?> GetLatestByPhoneAsync(Guid tenantId, string phoneCliente, CancellationToken ct = default);
-
-    /// <summary>Cola de handoffs abiertos del tenant (los más antiguos primero).</summary>
-    Task<List<Handoff>> GetOpenByTenantAsync(Guid tenantId, CancellationToken ct = default);
-
-    /// <summary>Tickets abiertos sin actividad desde antes del corte (p. ej. de una prueba quedada).</summary>
-    Task<List<Handoff>> GetStaleOpenAsync(DateTime cutoffUtc, CancellationToken ct = default);
-
-    Task AddAsync(Handoff handoff, CancellationToken ct = default);
-    Task UpdateAsync(Handoff handoff, CancellationToken ct = default);
 }
 
 /// <summary>

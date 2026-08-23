@@ -121,7 +121,7 @@ public class WaitlistNotificationUseCase : IWaitlistNotifier
         }
 
         var client = await _clientRepo.GetByIdAsync(entry.IdClient, ct);
-        if (client == null || string.IsNullOrWhiteSpace(client.WhatsApp))
+        if (client == null || string.IsNullOrWhiteSpace(client.PartnerDestination))
         {
             entry.Estado = "expired";
             entry.FechaActualizacion = DateTime.UtcNow;
@@ -146,7 +146,7 @@ public class WaitlistNotificationUseCase : IWaitlistNotifier
         entry.FechaActualizacion = DateTime.UtcNow;
         await _waitlistRepo.UpdateAsync(entry, ct);
         _logger.LogInformation("[Waitlist] Cupo liberado notificado a {Phone} (servicio {Service}, {Start})",
-            client.WhatsApp, entry.IdServiceType, slot.Start);
+            client.PartnerId, entry.IdServiceType, slot.Start);
         return EntryOutcome.Notified;
     }
 
@@ -229,7 +229,7 @@ public class WaitlistNotificationUseCase : IWaitlistNotifier
         {
             if (!string.IsNullOrWhiteSpace(templateName))
             {
-                var wamId = await _messagingProvider.SendTemplateAsync(client.WhatsApp, templateName,
+                var wamId = await _messagingProvider.SendTemplateAsync(client.PartnerDestination, templateName,
                     new Dictionary<string, string>
                     {
                         ["1"] = string.IsNullOrWhiteSpace(client.Nombre) ? "Hola" : client.Nombre,
@@ -239,19 +239,19 @@ public class WaitlistNotificationUseCase : IWaitlistNotifier
                 return wamId != null;
             }
 
-            if (_conversationSession.HasActiveSession(entry.IdTenant, client.WhatsApp))
+            if (_conversationSession.HasActiveSession(entry.IdTenant, client.UserId ?? client.WhatsApp))
             {
-                var wamId = await _messagingProvider.SendTextAsync(client.WhatsApp,
+                var wamId = await _messagingProvider.SendTextAsync(client.PartnerDestination,
                     BuildText(serviceName ?? "el servicio", cuandoStr), ct);
                 return wamId != null;
             }
 
-            _logger.LogInformation("[Waitlist] Sin template y fuera de ventana de sesión: no se envía a {Phone}", client.WhatsApp);
+            _logger.LogInformation("[Waitlist] Sin template y fuera de ventana de sesión: no se envía a {Phone}", client.PartnerId);
             return false;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[Waitlist] Error enviando aviso de cupo liberado a {Phone}", client.WhatsApp);
+            _logger.LogWarning(ex, "[Waitlist] Error enviando aviso de cupo liberado a {Phone}", client.PartnerId);
             return false;
         }
     }

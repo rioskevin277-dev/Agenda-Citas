@@ -78,7 +78,7 @@ OpenRouter__ApiKey=           # opcional
 WHATSAPP_ACCESS_TOKEN=       # ← PONER TU TOKEN de WhatsApp Cloud API
 WHATSAPP_PHONE_NUMBER_ID=    # ← PONER TU ID de número
 WHATSAPP_VERIFY_TOKEN=agenda_api_prod_2024
-NOTIFICACIONES_WHATSAPP_DUENO=   # número del dueño para avisos/handoff
+NOTIFICACIONES_WHATSAPP_DUENO=   # número del dueño para avisos
 WHATSAPP_RECORDATORIO_TEMPLATE_24H=   # template aprobado (opcional)
 WHATSAPP_RECORDATORIO_TEMPLATE_2H=    # template aprobado (opcional)
 
