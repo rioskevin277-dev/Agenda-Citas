@@ -92,15 +92,22 @@ public class ChatOrchestratorService
             return;
         }
 
+        // Reserva en curso negociada EN ESTA conversación (servicio/profesional/fecha). Sirve
+        // para anclar la confirmación a lo que se acordó aquí y no a cualquier cita pendiente
+        // vieja/huérfana que el cliente tenga en la BD (evita el bug que confirmaba la cita
+        // equivocada: ver TryConfirmUpcomingAsync).
+        var pendingBooking = _conversationState.GetPendingBooking(conversationKey);
+
         // FAST-PATH DE CONFIRMACIÓN: cuando el cliente responde un token claramente de
-        // confirmación (CONFIRMAR / CONFIRMO / "si, confirmo"...), confirmamos la próxima cita
-        // PENDIENTE de forma directa y determinista, sin depender de que el modelo elija la
-        // herramienta confirm_appointment. En el tier gratuito el modelo a veces contesta en
-        // texto "confirma CONFIRMAR" en vez de ejecutar la herramienta, lo que entraba en un
-        // loop: el cliente confirma y le vuelven a pedir que confirme. Este fast-path lo evita.
+        // confirmación (CONFIRMAR / CONFIRMO / "si, confirmo"...), confirmamos de forma directa
+        // y determinista la cita que coincide con la negociación en curso, sin depender de que el
+        // modelo elija la herramienta confirm_appointment. En el tier gratuito el modelo a veces
+        // contesta en texto "confirma CONFIRMAR" en vez de ejecutar la herramienta, lo que
+        // entraba en un loop: el cliente confirma y le vuelven a pedir que confirme. Este
+        // fast-path lo evita. Nunca confirma a ciegas una cita pendiente no relacionada.
         if (IsConfirmationIntent(messageContent))
         {
-            var confirmed = await TryConfirmUpcomingAsync(services, tenantId, userPhone, ct);
+            var confirmed = await TryConfirmUpcomingAsync(services, tenantId, userPhone, pendingBooking, ct);
             if (confirmed != null)
             {
                 string svcName = "tu cita";
@@ -140,9 +147,7 @@ public class ChatOrchestratorService
         _logger.LogInformation("[Orchestrator] Procesando mensaje de {Phone} para tenant {Tenant}",
             userPhone, tenantId);
 
-        // Estado estructurado de la conversación: reserva en curso.
-        var pendingBooking = _conversationState.GetPendingBooking(conversationKey);
-
+        // (pendingBooking ya se obtuvo arriba para el fast-path de confirmación.)
         // CRM: memoria operativa del cliente. Compila perfil/estado/historial desde la BD
         // (creando el cliente si es su primer contacto) y se inyecta en el system prompt para
         // que ADAM conozca el contexto del cliente al atenderlo, agendar o hacer seguimiento.
@@ -322,14 +327,22 @@ public class ChatOrchestratorService
     }
 
     /// <summary>
-    /// Confirma la próxima cita PENDIENTE futura del cliente (sin pasada). Devuelve la cita
-    /// confirmada, o null si no hay ninguna pendiente. Falla silencioso: un error aquí no
-    /// debe romper el turno (el AI entonces maneja el mensaje normalmente).
+    /// Confirma la cita pendiente que coincide con la negociación de ESTA conversación
+    /// (<paramref name="pending"/> = reserva en curso). Devuelve la cita confirmada, o null si
+    /// no hay una cita inequívoca que confirmar.
+    ///
+    /// <para>NO confirma "la próxima cita pendiente del cliente" a ciegas: si el cliente
+    /// confirmó una negociación que aún no se materializó en una cita pendiente (el modelo
+    /// preguntó "¿confirmas?" antes de create_appointment), o si la reserva en curso no
+    /// coincide con ninguna cita pendiente, devolvemos null y dejamos que el modelo cree y
+    /// confirme la cita correcta. Esto evita confirmar citas viejas/huérfanas de sesiones
+    /// previas (bug de confirmación de cita equivocada).</para>
     /// </summary>
     private async Task<Domain.Entities.Appointment?> TryConfirmUpcomingAsync(
         IServiceProvider services,
         Guid tenantId,
         string userPhone,
+        PendingBooking? pending,
         CancellationToken ct)
     {
         try
@@ -348,26 +361,87 @@ public class ChatOrchestratorService
                 TimeZoneInfo.FindSystemTimeZoneById(Environment.GetEnvironmentVariable("Calendar__TimeZone") ?? "America/Bogota"));
             var now = DateTime.SpecifyKind(businessNow, DateTimeKind.Utc);
 
-            var upcoming = (await appointmentRepo.GetByClientIdAsync(client.IdClient, ct))
+            var pendings = (await appointmentRepo.GetByClientIdAsync(client.IdClient, ct))
                 .Where(a => a.FechaInicio >= now && a.Estado == "pending")
                 .OrderBy(a => a.FechaInicio)
-                .FirstOrDefault();
-            if (upcoming == null)
+                .ToList();
+            if (pendings.Count == 0)
                 return null;
 
-            var dto = new Application.DTOs.AppointmentCancelDto
+            // Ancla: la reserva en curso describe lo que se negoció en esta conversación.
+            if (pending != null
+                && (!string.IsNullOrWhiteSpace(pending.ServiceTypeName) || pending.Fecha.HasValue))
             {
-                TenantId = tenantId,
-                AppointmentIdentifier = upcoming.IdAppointment.ToString()
-            };
-            var result = await useCase.ExecuteAsync(dto, ct);
-            return result != null ? upcoming : null;
+                IReadOnlyDictionary<Guid, string>? serviceNames = null;
+                if (!string.IsNullOrWhiteSpace(pending.ServiceTypeName))
+                {
+                    var svcRepo = services.GetRequiredService<IServiceTypeRepository>();
+                    serviceNames = (await svcRepo.GetByTenantIdAsync(tenantId, ct))
+                        .ToDictionary(s => s.IdServiceType, s => s.Nombre);
+                }
+
+                var matches = pendings.Where(a =>
+                        (string.IsNullOrWhiteSpace(pending.ServiceTypeName)
+                            || (serviceNames!.TryGetValue(a.IdServiceType, out var n) && SameName(n, pending.ServiceTypeName)))
+                        && (!pending.Fecha.HasValue
+                            || a.FechaInicio.Date == pending.Fecha.Value.ToDateTime(TimeOnly.MinValue, DateTimeKind.Unspecified).Date))
+                    .OrderBy(a => a.FechaInicio)
+                    .ToList();
+
+                // La negociación no coincide con ninguna cita pendiente real (el modelo aún no
+                // materializó create_appointment): NO confirmamos a ciegas una cita no relacionada.
+                if (matches.Count == 0)
+                    return null;
+
+                // Coinciden varias (mismo servicio/día en distintas horas): confirmar la primera.
+                var anchorTarget = matches[0];
+                return await ConfirmAsync(useCase, tenantId, anchorTarget, ct);
+            }
+
+            // Sin ancla (la cita pendiente ya se creó en esta conversación): preferimos la cita
+            // pendiente MÁS RECIÉN CREADA (la agendada en este turno), no la más lejana.
+            var target = pendings.OrderByDescending(a => a.FechaCreacion).First();
+            return await ConfirmAsync(useCase, tenantId, target, ct);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "[Orchestrator] Fast-path de confirmación falló para {Phone}: {Msg}", userPhone, ex.Message);
             return null;
         }
+    }
+
+    /// <summary>Confirma una cita concreta vía use case y devuelve la cita si se confirmó.</summary>
+    private async Task<Domain.Entities.Appointment?> ConfirmAsync(
+        Application.UseCases.ConfirmAppointmentUseCase useCase,
+        Guid tenantId,
+        Domain.Entities.Appointment appointment,
+        CancellationToken ct)
+    {
+        var dto = new Application.DTOs.AppointmentCancelDto
+        {
+            TenantId = tenantId,
+            AppointmentIdentifier = appointment.IdAppointment.ToString()
+        };
+        var result = await useCase.ExecuteAsync(dto, ct);
+        return result != null ? appointment : null;
+    }
+
+    /// <summary>Compara nombres de servicio tolerante a mayúsculas, acentos y la palabra "de".</summary>
+    private static bool SameName(string a, string b)
+    {
+        static string Norm(string s)
+        {
+            var sb = new System.Text.StringBuilder(s.Length);
+            var form = s.Normalize(System.Text.NormalizationForm.FormD);
+            foreach (var ch in form)
+                if (System.Globalization.CharUnicodeInfo.GetUnicodeCategory(ch)
+                        != System.Globalization.UnicodeCategory.NonSpacingMark)
+                    sb.Append(ch);
+            return sb.ToString().ToLowerInvariant().Trim();
+        }
+        var na = Norm(a);
+        var nb = Norm(b);
+        return na == nb || na.Contains(nb) || nb.Contains(na);
     }
 
     private async Task<string> ExecuteToolAsync(
