@@ -243,10 +243,14 @@ public class MessageBufferService : BackgroundService
 
             var orchestrator = scope.ServiceProvider.GetRequiredService<ChatOrchestratorService>();
 
-            // Límite de tiempo de respuesta: el cliente recibe una respuesta a más tardar 15 s
+            // Límite de tiempo de respuesta: el cliente recibe una respuesta a más tardar N s
             // después del flush. Si la cadena de proveedores de IA o las herramientas tardan más,
             // el token se cancela y ProcessMessageAsync corta el turno sin bloquear al cliente.
-            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            // Default 30s (antes 15s): las cadenas legítimas create+confirm sobrepasan 15s cuando
+            // el proveedor free es lento o está rate-limiteado. Configurable con TURNO_TIMEOUT_SEG.
+            var timeoutSeg = int.TryParse(
+                Environment.GetEnvironmentVariable("TURNO_TIMEOUT_SEG"), out var t) ? t : 30;
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeg));
             using var responseCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
 
             await orchestrator.ProcessMessageAsync(from, fullContent, tenantId, responseCts.Token, clientName);
