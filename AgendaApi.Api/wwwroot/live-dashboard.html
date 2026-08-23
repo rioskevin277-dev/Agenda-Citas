@@ -7,7 +7,7 @@
 <style>
   :root{
     --bg:#0f1220; --panel:#171b2e; --panel2:#1e2440; --line:#2a3154;
-    --text:#e8ecf8; --muted:#98a2c9; --accent:#3b82f6;
+    --text:#e8ecf8; --muted:#98a2c9; --accent:#3b82f6; --accent2:#22d3ee;
     --user:#2453c4; --assistant:#232a49; --ok:#22c55e; --err:#ef4444;
   }
   *{box-sizing:border-box}
@@ -25,20 +25,36 @@
   button:hover{border-color:var(--accent)}
   .keybar{padding:10px 18px;background:var(--panel2);border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center}
   .keybar input{flex:1;max-width:320px;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:7px 10px}
+
   #feed{flex:1;overflow-y:auto;padding:16px 18px 24px}
-  .thread-hdr{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.4px;margin:18px 0 6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-  .thread-hdr:first-child{margin-top:0}
-  .thread-hdr b{color:var(--accent);font-weight:600}
+
+  /* Sección = negocio */
+  .tenant{border:1px solid var(--line);border-radius:12px;background:var(--panel);margin-bottom:14px;overflow:hidden}
+  .tenant:first-child{margin-top:0}
+  .tenant-hdr{display:flex;align-items:center;gap:8px;padding:9px 14px;background:var(--panel2);border-bottom:1px solid var(--line);font-weight:600;flex-wrap:wrap}
+  .tenant-hdr .badge{font-size:11px;color:var(--muted);font-weight:400;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1px 8px}
+  .threads{padding:10px 12px}
+
+  /* Hilo = cliente dentro del negocio */
+  .thread{border:1px solid var(--line);border-radius:10px;background:var(--bg);margin-bottom:10px;overflow:hidden}
+  .thread:last-child{margin-bottom:0}
+  .thread-hdr{color:var(--muted);font-size:12px;padding:7px 12px;background:var(--panel2);border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .thread-hdr b{color:var(--accent2);font-weight:600}
+  .thread-hdr .cnt{font-size:11px;color:var(--muted)}
+  .msgs{padding:8px 12px}
+
   .row{display:flex;margin:4px 0}
+  .row.from{justify-content:flex-start}
+  .row.to{justify-content:flex-end}
   .row.from .bubble{background:var(--user)}
   .row.to  .bubble{background:var(--assistant);border:1px solid var(--line)}
-  .from{justify-content:flex-start}
-  .to{justify-content:flex-end}
-  .bubble{max-width:68%;padding:8px 12px;border-radius:12px;white-space:pre-wrap;word-break:break-word;box-shadow:0 1px 2px rgba(0,0,0,.35)}
+  .bubble{max-width:70%;padding:7px 11px;border-radius:12px;white-space:pre-wrap;word-break:break-word;box-shadow:0 1px 2px rgba(0,0,0,.35)}
   .bubble .meta{font-size:11px;color:rgba(255,255,255,.65);margin-bottom:3px}
   .bubble .time{opacity:.75}
   .empty, .err{color:var(--muted);text-align:center;padding:40px 20px}
   .err{color:var(--err)}
+  .hidden{display:none !important}
+
   footer{padding:8px 18px;background:var(--panel);border-top:1px solid var(--line);color:var(--muted);font-size:12px}
 </style>
 </head>
@@ -63,7 +79,7 @@
 
 <footer>
   <span id="count"></span>
-  <span style="margin-left:16px">Actualiza cada 2 s · izquierda = cliente · derecha = ADAM</span>
+  <span style="margin-left:16px">Actualiza cada 2 s · izquierda = cliente · derecha = ADAM · ordenado por negocio → cliente (actividad reciente)</span>
 </footer>
 
 <script>
@@ -81,18 +97,21 @@
   var countEl = document.getElementById('count');
 
   var key = '';
-  var seen = new Set();      // ids ya renderizados (dedup por colisiones de timestamp)
+  var seen = new Set();      // ids ya renderizados (dedup)
   var lastTime = null;       // ISO del último mensaje visto (para ?after=)
   var paused = false;
   var loading = true;
-  var lastPhone = null;
+
+  var sections = {};   // tenantId -> {el, threadsEl, hdrEl}
+  var threads = {};    // convKey  -> {el, body, hdrEl, phone, tenantId, tenantEl}
+
+  function convKey(m){ return m.tenantId + '|' + (m.phone || ''); }
 
   // ── Clave: del query primero; si no, la pide una única vez y la guarda en sessionStorage ──
   function initKey(){
     var m = /[?&]key=([^&]+)/.exec(location.search);
     if (m && m[1]){
       key = decodeURIComponent(m[1]);
-      // Limpiar el secret de la URL (no queda en el historial).
       history.replaceState(null, '', location.pathname);
     } else {
       key = sessionStorage.getItem('dash_key') || '';
@@ -110,6 +129,62 @@
   keyGo.addEventListener('click', go);
   keyInput.addEventListener('keydown', function(e){ if(e.key==='Enter') go(); });
 
+  // ── DOM helpers ──
+  function makeEl(className, text){
+    var el = document.createElement('div');
+    el.className = className;
+    if (text != null) el.textContent = text;
+    return el;
+  }
+
+  function ensureSection(m){
+    var tid = m.tenantId;
+    var sec = sections[tid];
+    if (!sec){
+      var el = document.createElement('div');
+      el.className = 'tenant';
+      var hdr = makeEl('tenant-hdr');
+      hdr.appendChild(makeEl('span', m.tenantName || 'Negocio'));
+      var bad = document.createElement('span'); bad.className='badge'; bad.textContent='negocio';
+      hdr.appendChild(bad);
+      var threadsEl = document.createElement('div'); threadsEl.className='threads';
+      el.appendChild(hdr); el.appendChild(threadsEl);
+      sec = { el: el, hdrEl: hdr, threadsEl: threadsEl };
+      sections[tid] = sec;
+    }
+    return sec;
+  }
+
+  function ensureThread(m){
+    var ck = convKey(m);
+    var th = threads[ck];
+    if (!th){
+      var sec = ensureSection(m);
+      var el = document.createElement('div');
+      el.className = 'thread';
+      var hdr = makeEl('thread-hdr');
+      var b = document.createElement('b'); b.textContent = '@' + (m.phone || '?');
+      var cnt = document.createElement('span'); cnt.className='cnt'; cnt.textContent='0 msgs';
+      hdr.appendChild(b); hdr.appendChild(cnt);
+      var body = document.createElement('div'); body.className='msgs';
+      el.appendChild(hdr); el.appendChild(body);
+      sec.threadsEl.appendChild(el);
+      th = { el: el, body: body, hdrEl: hdr, cntEl: cnt, phone: m.phone||'', tenantId: m.tenantId, sec: sec };
+      threads[ck] = th;
+    }
+    return th;
+  }
+
+  // Ordena por actividad reciente: al recibir un mensaje, su hilo sube a tope del negocio
+  // y su sección (negocio) sube a tope del feed.
+  function touch(m){
+    var th = ensureThread(m);
+    var sec = th.sec;
+    if (sec.threadsEl.firstChild !== th.el) sec.threadsEl.insertBefore(th.el, sec.threadsEl.firstChild);
+    if (feed.firstChild !== sec.el) feed.insertBefore(sec.el, feed.firstChild);
+    return th;
+  }
+
   // ── Poll ──
   function buildUrl(initial){
     var u = '/api/v1/dashboard/conversations?key=' + encodeURIComponent(key);
@@ -119,8 +194,7 @@
   function poll(initial){
     if (!key){ return; }
     fetch(buildUrl(initial)).then(function(r){
-      if (r.status === 401){ throw new Error('Clave inválida');
-      }
+      if (r.status === 401){ throw new Error('Clave inválida'); }
       if (!r.ok){ throw new Error('HTTP ' + r.status); }
       return r.json();
     }).then(function(data){
@@ -136,58 +210,63 @@
 
   function append(msgs){
     var changed = false;
+    var ph = feed.querySelector('.empty');
+    if (ph) ph.remove();
     msgs.forEach(function(m){
-      if (seen.has(m.id)) return;           // dedup por id (colisiones de timestamp)
+      if (seen.has(m.id)) return;
       seen.add(m.id);
       if (!lastTime || m.time > lastTime) lastTime = m.time;
-      renderThread(m);
+
+      var th = touch(m);
+      var fromClient = m.role === 'user';
+      var row = document.createElement('div');
+      row.className = 'row ' + (fromClient ? 'from' : 'to');
+      row.dataset.text = (m.content||'').toLowerCase();
+      row.dataset.phone = (m.phone||'').toLowerCase();
+      row.innerHTML = '<div class="bubble"><div class="meta">' +
+        (fromClient ? '🟢 Cliente' : '🤖 ADAM') +
+        ' <span class="time">' + esc(fmtTime(m.time)) + '</span></div>' +
+        esc(m.content || '') + '</div>';
+      th.body.appendChild(row);
+      th.cntEl.textContent = (parseInt(th.cntEl.textContent, 10) || 0) + 1 + ' msgs';
       changed = true;
     });
     if (changed){ applyFilter(); refreshCount(); }
   }
 
-  function renderThread(m){
-    if (m.phone !== lastPhone){
-      var h = document.createElement('div');
-      h.className = 'thread-hdr';
-      h.dataset.phone = m.phone || '';
-      h.innerHTML = '<span><b>@' + esc(m.phone || '?') + '</b></span>' +
-                    (m.tenantName ? '<span>' + esc(m.tenantName) + '</span>' : '');
-      feed.appendChild(h);
-      lastPhone = m.phone;
-    }
-    var row = document.createElement('div');
-    var fromClient = m.role === 'user';
-    row.className = 'row ' + (fromClient ? 'from' : 'to');
-    row.dataset.phone = m.phone || (m.phone||'');
-    row.dataset.text = (m.content||'').toLowerCase();
-    row.innerHTML = '<div class="bubble"><div class="meta">' +
-      (fromClient ? '🟢 Cliente' : '🤖 ADAM') +
-      ' <span class="time">' + esc(fmtTime(m.time)) + '</span></div>' +
-      esc(m.content || '') + '</div>';
-    feed.appendChild(row);
-  }
-
   function applyFilter(){
     var q = qEl.value.trim().toLowerCase();
-    var els = feed.querySelectorAll('.row, .thread-hdr');
-    for (var i=0;i<els.length;i++){
-      var el = els[i];
-      var phone = (el.dataset.phone || '').toLowerCase();
-      var text = (el.dataset.text || '').toLowerCase();
-      var show = !q || phone.indexOf(q) !== -1 || text.indexOf(q) !== -1;
-      el.style.display = show ? '' : 'none';
-    }
+    Object.keys(threads).forEach(function(ck){
+      var th = threads[ck];
+      var show = false;
+      var rows = th.body.querySelectorAll('.row');
+      for (var i=0;i<rows.length;i++){
+        var r = rows[i];
+        var txt = (r.dataset.text || '') + ' ' + r.dataset.phone;
+        var ok = !q || txt.indexOf(q) !== -1;
+        r.style.display = ok ? '' : 'none';
+        if (ok) show = true;
+      }
+      if (!q && rows.length) show = true;
+      th.el.classList.toggle('hidden', !show && rows.length > 0);
+    });
+    Object.keys(sections).forEach(function(tid){
+      var sec = sections[tid];
+      var any = Array.prototype.some.call(sec.threadsEl.children, function(c){
+        return !c.classList.contains('hidden');
+      });
+      sec.el.classList.toggle('hidden', !any);
+    });
     scrollToBottom();
   }
 
   function refreshCount(){
-    countEl.textContent = seen.size + ' mensaje' + (seen.size===1?'':'s');
+    countEl.textContent = seen.size + ' mensaje' + (seen.size===1?'':'s') +
+      ' · ' + Object.keys(threads).length + ' conversación' + (Object.keys(threads).length===1?'':'es') +
+      ' · ' + Object.keys(sections).length + ' negocio' + (Object.keys(sections).length===1?'':'s');
   }
 
-  function scrollToBottom(){
-    feed.scrollTop = feed.scrollHeight;
-  }
+  function scrollToBottom(){ feed.scrollTop = feed.scrollHeight; }
 
   function setStatus(ok, msg){
     dot.className = 'dot ' + (ok ? 'live' : 'err');

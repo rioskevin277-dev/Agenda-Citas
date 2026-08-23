@@ -38,6 +38,14 @@ public class ChatOrchestratorService
         using var scope = _scopeFactory.CreateScope();
         var services = scope.ServiceProvider;
 
+        // La entrega final del turno — persistir la respuesta en el historial (dashboard en vivo)
+        // y escalar a humano — NO debe quedar sujeta al timeout de 15 s (MessageBufferService).
+        // Si la IA tarda cerca del límite, el token de turno (ct) ya está cancelado y el
+        // SaveChangesAsync revienta con OperationCanceledException: el mensaje sale por WhatsApp
+        // pero nunca se guarda y desaparece del dashboard. Se usa un token de entrega propio
+        // (sin reloj) para el persistido/entrega de la respuesta final.
+        var deliveryToken = CancellationToken.None;
+
         // Cadena de proveedores: se prueba en orden hasta que uno responde.
         // Groq (gratuito) primero; su respaldo gratis es OpenRouter (gateway con modelos :free),
         // luego OpenAI y Anthropic como fallback de pago.
@@ -78,7 +86,7 @@ public class ChatOrchestratorService
             await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "user", messageContent, ct);
             await messaging.SendTextAsync(userPhone, waitingText, ct);
             _conversationMemory.AddAssistant(conversationKey, waitingText);
-            await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", waitingText, ct);
+            await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", waitingText, deliveryToken);
             _logger.LogInformation("[Orchestrator] Mensaje de {Phone} en handoff activo ({State}), AI congelado",
                 userPhone, openHandoff.Estado);
             return;
@@ -112,7 +120,7 @@ public class ChatOrchestratorService
                 await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "user", messageContent, ct);
                 await messaging.SendTextAsync(userPhone, confirmText);
                 _conversationMemory.AddAssistant(conversationKey, confirmText);
-                await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", confirmText, ct);
+                await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", confirmText, deliveryToken);
                 _logger.LogInformation("[Orchestrator] Cita {Id} confirmada por fast-path CONFIRMAR para {Phone}",
                     confirmed.IdAppointment, userPhone);
                 return;
@@ -197,16 +205,30 @@ public class ChatOrchestratorService
 
             if (usedProvider == null)
             {
-                _logger.LogError("[Orchestrator] Todos los proveedores fallaron: {Error}", result.TextContent);
                 const string errorText = "Lo siento, tuve un problema. Por favor intenta mas tarde.";
                 // Registrar el turno del asistente ANTES de escalar/enviar: si la escalada o el
                 // envío de WhatsApp lanzan una excepción tras entregar, el histórico igual queda
                 // persistido (y aparece en el dashboard en vivo).
                 _conversationMemory.AddAssistant(conversationKey, errorText);
-                await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", errorText, ct);
-                await EscalateToHumanAsync(services, tenantId, userPhone, clientName,
-                    "Todos los proveedores de IA fallaron al procesar la solicitud del cliente.", accionesPrevias, ct);
+                await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", errorText, deliveryToken);
                 await messaging.SendTextAsync(userPhone, errorText);
+
+                // Fallo transitorio por TIMEOUT del turno (15 s) vs fallo real de todos los
+                // proveedores. El timeout se dispara cuando la IA tarda demasiado (p. ej. por el
+                // rate-limit de Groq que hace lenta la generación): es transitorio y NO debe
+                // escalar a humano ni crear un handoff durable (eso congelaría a la IA para todos
+                // los mensajes posteriores). Solo en un fallo genuino (ningún proveedor disponible)
+                // escalamos y dejamos que un humano atienda.
+                if (ct.IsCancellationRequested)
+                {
+                    _logger.LogWarning("[Orchestrator] Turno cancelado por timeout (15s) antes de obtener respuesta de la IA; respondo sin escalar (transitorio)");
+                }
+                else
+                {
+                    _logger.LogError("[Orchestrator] Todos los proveedores fallaron: {Error}", result.TextContent);
+                    await EscalateToHumanAsync(services, tenantId, userPhone, clientName,
+                        "Todos los proveedores de IA fallaron al procesar la solicitud del cliente.", accionesPrevias, deliveryToken);
+                }
                 return;
             }
             _logger.LogInformation("[Orchestrator] Respondiendo con {Provider}", usedProvider);
@@ -232,7 +254,7 @@ public class ChatOrchestratorService
                 var responseText = result.TextContent ?? "En que mas puedo ayudarte?";
                 await messaging.SendTextAsync(userPhone, responseText);
                 _conversationMemory.AddAssistant(conversationKey, responseText);
-                await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", responseText, ct);
+                await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", responseText, deliveryToken);
                 return;
             }
 
@@ -274,16 +296,16 @@ public class ChatOrchestratorService
             _logger.LogInformation("[Orchestrator] Sin cupos (churn de disponibilidad): respondo sin escalar a humano");
             await messaging.SendTextAsync(userPhone, noSlotsText);
             _conversationMemory.AddAssistant(conversationKey, noSlotsText);
-            await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", noSlotsText, ct);
+            await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", noSlotsText, deliveryToken);
             return;
         }
 
         const string maxIterText = "Estoy procesando tu solicitud. Un asesor te contactara pronto para confirmar.";
         await EscalateToHumanAsync(services, tenantId, userPhone, clientName,
-            "Se alcanzó el máximo de iteraciones AI sin resolver la solicitud del cliente.", accionesPrevias, ct);
+            "Se alcanzó el máximo de iteraciones AI sin resolver la solicitud del cliente.", accionesPrevias, deliveryToken);
         await messaging.SendTextAsync(userPhone, maxIterText);
         _conversationMemory.AddAssistant(conversationKey, maxIterText);
-        await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", maxIterText, ct);
+        await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userPhone, "assistant", maxIterText, deliveryToken);
     }
 
     /// <summary>
