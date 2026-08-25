@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AgendaApi.Application.Support;
 using AgendaApi.Application.Tools;
 using AgendaApi.Domain.Ports;
 using AgendaApi.Infrastructure.AiProviders;
@@ -14,7 +15,8 @@ public class ChatOrchestratorService
     private readonly ConversationStateService _conversationState;
     private readonly ILogger<ChatOrchestratorService> _logger;
 
-    private const int MaxToolIterations = 5;
+    private const int MaxToolIterations = 7;
+    private const int MaxReasoningRetries = 2;
 
     public ChatOrchestratorService(
         IServiceScopeFactory scopeFactory,
@@ -173,33 +175,19 @@ public class ChatOrchestratorService
         // caso comercial normal — informar al cliente.
         bool sawAvailabilityProbe = false;
         bool sawCreateAppointment = false;
+        // Regeneración acotada cuando el modelo responde con su razonamiento interno en vez de
+        // un mensaje para el cliente (se fuerza un número limitado de reintentos, ver abajo).
+        int reasoningGuard = 0;
 
         for (int iteration = 0; iteration < MaxToolIterations; iteration++)
         {
             _logger.LogDebug("[Orchestrator] Iteracion {Iter}/{Max}", iteration + 1, MaxToolIterations);
 
-            AiToolCallResult result = new() { Success = false };
-            string? usedProvider = null;
-
-            // Probar proveedores en orden hasta obtener una respuesta válida
-            foreach (var p in aiProviders)
-            {
-                try
-                {
-                    result = await p.Provider.GenerateResponseWithToolsAsync(messages, p.Tools, ct);
-                    if (result.Success)
-                    {
-                        usedProvider = p.Name;
-                        break;
-                    }
-                    _logger.LogWarning("[Orchestrator] {Provider} fallo (Success=false): {Error}",
-                        p.Name, result.TextContent);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning("[Orchestrator] {Provider} fallo: {Message}", p.Name, ex.Message);
-                }
-            }
+            // Probar la cadena de proveedores con reintentos tolerantes a fallos transitorios
+            // (429/rate-limit o timeout de los tier :free). Un tropiezo puntual de un proveedor
+            // ya no tumba el turno al genérico "Lo siento, tuve un problema" de inmediato.
+            var (usedProvider, result) =
+                await TryGenerateWithRetryAsync(aiProviders, messages, ct);
 
             if (usedProvider == null)
             {
@@ -242,9 +230,41 @@ public class ChatOrchestratorService
 
             if (result.FinishReason != "tool_calls" || result.ToolCalls == null || result.ToolCalls.Count == 0)
             {
-                _logger.LogInformation("[Orchestrator] Respuesta final del modelo, sin tool calls");
-
                 var responseText = result.TextContent ?? "En que mas puedo ayudarte?";
+
+                // Fuga de razonamiento: si la "respuesta final" es en realidad el razonamiento
+                // interno del modelo (menciona herramientas, "UTC", "el cliente quiere", slots…),
+                // NUNCA se envía ni se persiste. Se fuerza una regeneración acotada para que el
+                // modelo dé un mensaje real al cliente. (Caso real: un tier :free respondió su
+                // chain-of-thought como texto terminal y llegó al cliente/CRM.)
+                if (LooksLikeReasoning(responseText))
+                {
+                    _logger.LogWarning("[Orchestrator] Respuesta final parece razonamiento interno; se descarta (try {Try}): {Text}",
+                        reasoningGuard + 1, Truncate(responseText, 180));
+
+                    if (reasoningGuard < MaxReasoningRetries)
+                    {
+                        reasoningGuard++;
+                        messages.Add(new ChatMessage
+                        {
+                            Role = "user",
+                            Content = "IMPORTANTE: responde directamente al cliente con un mensaje amable y final en espanol. " +
+                                      "NO describas tu proceso interno ni el contenido de las herramientas, NO menciones UTC, " +
+                                      "check_availability, slots ni nombres de herramientas."
+                        });
+                        continue; // regenerar (el for de proveedores con reintento corre de nuevo)
+                    }
+
+                    // Limite de regeneraciones: no mandamos el razonamiento, se degrada elegante.
+                    const string fallbackText = "Estoy procesando tu solicitud. Un asesor te contactara pronto para confirmar.";
+                    _logger.LogWarning("[Orchestrator] Limite de regeneracion alcanzado; se responde genérico (no se fuga el razonamiento)");
+                    await messaging.SendTextAsync(replyTo, fallbackText);
+                    _conversationMemory.AddAssistant(conversationKey, fallbackText);
+                    await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userId, "assistant", fallbackText, deliveryToken);
+                    return;
+                }
+
+                _logger.LogInformation("[Orchestrator] Respuesta final del modelo, sin tool calls");
                 await messaging.SendTextAsync(replyTo, responseText);
                 _conversationMemory.AddAssistant(conversationKey, responseText);
                 await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userId, "assistant", responseText, deliveryToken);
@@ -430,6 +450,98 @@ public class ChatOrchestratorService
         return na == nb || na.Contains(nb) || nb.Contains(na);
     }
 
+    /// <summary>
+    /// Interpreta una fecha/hora que envía la IA como HORA LOCAL del negocio
+    /// (convención "hora local disfrazada de UTC"). Se descarta cualquier offset o zona
+    /// (Z, ±HH:MM) que el modelo agregue: el valor wall-clock ES la hora local real.
+    /// Antes, pasar 15:00Z (que el modelo cree = 10:00 local) guardaba 15:00 como hora local.
+    /// </summary>
+    private static DateTime ParseLocalDateTime(string? raw)
+    {
+        var cleaned = System.Text.RegularExpressions.Regex.Replace(
+            raw?.Trim() ?? "", @"(Z|[+-]\d{2}:?\d{2})$", "");
+        // Ya sin offset/zona, el valor wall-clock es la hora local real; se marca Kind=Utc
+        // (convención "hora local disfrazada de UTC"). El texto puede venir vacío ("") si el modelo
+        // no mandó el campo: no debe explotar el turno.
+        if (string.IsNullOrWhiteSpace(cleaned)) return DateTime.MinValue;
+        var parsed = DateTime.Parse(cleaned);
+        return DateTime.SpecifyKind(parsed, DateTimeKind.Utc);
+    }
+
+    /// <summary>
+    /// Prueba la cadena de proveedores de IA con reintentos tolerantes a fallos TRANSITORIOS
+    /// (429/rate-limit o timeout de los tier :free). Sin esto, un solo tropiezo puntual de todos
+    /// los proveedores en el primer pase tumbaba el turno al genérico "Lo siento, tuve un problema".
+    /// </summary>
+    private static async Task<(string? Provider, AiToolCallResult Result)> TryGenerateWithRetryAsync(
+        (string Name, IAiProvider Provider, List<object> Tools)[] aiProviders,
+        List<ChatMessage> messages,
+        CancellationToken ct)
+    {
+        AiToolCallResult result = new() { Success = false };
+        string? usedProvider = null;
+
+        // 2 pases: el inicial + un reintento con pausa para dar margen al rate-limit.
+        for (int attempt = 0; attempt < 2 && usedProvider == null; attempt++)
+        {
+            if (attempt > 0)
+            {
+                try { await Task.Delay(600); } catch { break; }
+            }
+
+            foreach (var p in aiProviders)
+            {
+                try
+                {
+                    result = await p.Provider.GenerateResponseWithToolsAsync(messages, p.Tools, ct);
+                    if (result.Success)
+                    {
+                        usedProvider = p.Name;
+                        break;
+                    }
+                }
+                catch (Exception)
+                {
+                    // fallo transitorio (incl. timeout del turno): se reintenta en el siguiente
+                    // pase / proveedor; si todos fallan, se degrada en el punto de llamada.
+                }
+            }
+        }
+
+        return (usedProvider, result);
+    }
+
+    /// <summary>
+    /// Heurística para detectar si una "respuesta final" es en realidad razonamiento interno
+    /// del modelo (chain-of-thought) que no debe llegar al cliente ni al CRM. Requiere >= 2
+    /// señales para reducir falsos positivos.
+    /// </summary>
+    private static bool LooksLikeReasoning(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var t = text.ToLowerInvariant();
+        int signals = 0;
+
+        string[] tools = { "check_availability", "create_appointment", "cancel_appointment",
+                                 "confirm_appointment", "reschedule_appointment", "list_appointments",
+                                 "add_to_waitlist" };
+        if (tools.Any(t.Contains)) signals++;
+        if (t.Contains("utc")) signals++;
+        if (t.Contains("slot")) signals++;
+        if (t.Contains("el cliente quiere") || t.Contains("el usuario quiere")) signals++;
+        if (t.Contains("muestra dos slots") || t.Contains("los slots")) signals++;
+        if (t.StartsWith("el cliente") || t.StartsWith("el cliente quiere")) signals++;
+
+        return signals >= 2;
+    }
+
+    /// <summary>Recorta un texto largo para logs (evita volcar mensajes completos).</summary>
+    private static string Truncate(string? text, int max)
+    {
+        if (string.IsNullOrEmpty(text)) return "";
+        return text.Length <= max ? text : text[..max] + "…";
+    }
+
     private async Task<string> ExecuteToolAsync(
         string toolName,
         string argumentsJson,
@@ -517,7 +629,11 @@ PROFESIONALES (lista exacta del negocio — quiénes atienden citas):
         // (en producción llegaron a generar 2024 para "el viernes"). Con la fecha como referencia
         // calculan horizontes futuros correctos. Se usa cultura es-ES para nombres de día/mes fijos.
         var cult = System.Globalization.CultureInfo.GetCultureInfo("es-ES");
-        var now = DateTime.Now;
+        // La fecha/hora que se inyecta al LLM como "hoy" debe ser la del NEGOCIO (env
+        // Calendar__TimeZone), no la del reloj del contenedor (que suele estar en UTC y
+        // adelanta el día tras las 19:00 local, haciendo que el modelo calcule mal el día
+        // de la semana). BusinessClock aplica el huso del negocio y "disfraza de UTC".
+        var now = BusinessClock.Now;
         string hoy = now.ToString("dddd, dd 'de' MMMM 'de' yyyy", cult).ToLowerInvariant();
         string fechaReferencia = $@"
 
@@ -546,6 +662,12 @@ REGLAS IMPORTANTES:
 CLIENTE ACTUAL:
 " + senderIdentity + @"
 " + fechaReferencia + @"
+
+HORARIOS EN HORA LOCAL (IMPORTANTE):
+- Las herramientas check_availability, create_appointment, reschedule_appointment y list_appointments trabajan SIEMPRE en hora LOCAL del negocio.
+- Los horarios que devuelve check_availability ya están en hora local: usa el MISMO valor (sin sumar ni restar horas) al llamar create_appointment o reschedule_appointment.
+- NUNCA conviertas entre UTC y hora local. Pasa a create_appointment la misma hora local que acordaste con el cliente.
+- Cuando menciones el dia de la semana, verificalo contra la FECHA ACTUAL de arriba y contra el calendario real: por ejemplo, si hoy es 'martes 25', manana es 'miercoles 26'. Si tienes duda, escribe solo la fecha en formato dd/mm/aaaa.
 
 REGLAS CRITICAS SOBRE LOS DATOS DEL CLIENTE:
 - El WhatsApp del cliente SIEMPRE es el numero real " + userPhone + @". NUNCA lo inventes ni uses numeros de ejemplo (como 1234567890).
@@ -600,10 +722,16 @@ HERRAMIENTAS DISPONIBLES:
         var result = new
         {
             success = true,
+            // Los horarios de este resultado están en HORA LOCAL del negocio (la app agenda
+            // y guarda siempre en hora local). El modelo debe pasarlos a create_appointment
+            // TAL CUAL, sin convertirlos a UTC (convertir añadía +5 h por interpretarlos como UTC).
+            timezone = "hora local del negocio (" +
+                (Environment.GetEnvironmentVariable("Calendar__TimeZone") ?? "America/Bogota") +
+                ") — usa estas horas tal cual, NO las conviertas a UTC",
             slots = slots.Select(s => new
             {
-                start = s.Start.ToString("yyyy-MM-ddTHH:mm:ssZ"),
-                end = s.End.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                start = s.Start.ToString("yyyy-MM-ddTHH:mm:ss"),
+                end = s.End.ToString("yyyy-MM-ddTHH:mm:ss"),
                 serviceType = s.ServiceTypeName
             }),
             total_slots = slots.Count
@@ -637,7 +765,7 @@ HERRAMIENTAS DISPONIBLES:
             ClientName = resolvedName!,
             ServiceTypeName = args.GetProperty("service_type_name").GetString()!,
             ProfessionalName = args.TryGetProperty("professional_name", out var prof) ? prof.GetString() : null,
-            FechaInicio = DateTime.Parse(args.GetProperty("fecha_inicio").GetString()!),
+            FechaInicio = ParseLocalDateTime(args.GetProperty("fecha_inicio").GetString()!),
             Notas = args.TryGetProperty("notas", out var notas) ? notas.GetString() : null
         };
 
@@ -656,8 +784,8 @@ HERRAMIENTAS DISPONIBLES:
                 id = response.Id,
                 serviceType = response.ServiceTypeName,
                 professional = response.ProfessionalName,
-                start = response.FechaInicio.ToString("yyyy-MM-ddTHH:mm:ssZ"),
-                end = response.FechaFin.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                start = response.FechaInicio.ToString("yyyy-MM-ddTHH:mm:ss"),
+                end = response.FechaFin.ToString("yyyy-MM-ddTHH:mm:ss"),
                 status = response.Status,
                 clientName = response.ClientName
             }
@@ -858,7 +986,7 @@ HERRAMIENTAS DISPONIBLES:
             AppointmentId = parsedId,
             AppointmentIdentifier = parsedId == Guid.Empty ? idArg : null,
             TenantId = tenantId,
-            NuevaFechaInicio = DateTime.Parse(args.GetProperty("nueva_fecha_inicio").GetString()!)
+            NuevaFechaInicio = ParseLocalDateTime(args.GetProperty("nueva_fecha_inicio").GetString()!)
         };
 
         var response = await useCase.ExecuteAsync(dto, ct);
@@ -869,7 +997,7 @@ HERRAMIENTAS DISPONIBLES:
             appointment = response == null ? null : new
             {
                 id = response.Id,
-                newStart = response.FechaInicio.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                newStart = response.FechaInicio.ToString("yyyy-MM-ddTHH:mm:ss"),
                 status = response.Status
             }
         });
@@ -895,8 +1023,8 @@ HERRAMIENTAS DISPONIBLES:
             {
                 id = a.Id,
                 serviceType = a.ServiceTypeName,
-                start = a.FechaInicio.ToString("yyyy-MM-ddTHH:mm:ssZ"),
-                end = a.FechaFin.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                start = a.FechaInicio.ToString("yyyy-MM-ddTHH:mm:ss"),
+                end = a.FechaFin.ToString("yyyy-MM-ddTHH:mm:ss"),
                 status = a.Status,
                 clientName = a.ClientName
             })
