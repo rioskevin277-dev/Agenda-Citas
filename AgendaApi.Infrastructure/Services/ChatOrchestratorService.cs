@@ -64,9 +64,12 @@ public class ChatOrchestratorService
         // Groq queda como respaldo gratis; luego OpenAI y Anthropic como fallback de pago.
         var aiProviders = new (string Name, IAiProvider Provider, List<object> Tools)[]
         {
+            // OpenAI out of the chain: its global key is rejected/broken, and a provider that
+            // hangs on auth burns the ~30s turn budget across the 2 retry passes (new clients
+            // hit the generic "Lo siento, tuve un problema"). OpenRouter + Groq (free) plus
+            // Anthropic (paid) cover the fallback without the broken lane.
             ("OpenRouter", services.GetRequiredService<OpenRouterProvider>(), AppointmentToolDefinitions.GetOpenAiToolDefinitions()),
             ("Groq", services.GetRequiredService<GroqProvider>(), AppointmentToolDefinitions.GetOpenAiToolDefinitions()),
-            ("OpenAI", services.GetRequiredService<OpenAIProvider>(), AppointmentToolDefinitions.GetOpenAiToolDefinitions()),
             ("Anthropic", services.GetRequiredService<AnthropicProvider>(), AppointmentToolDefinitions.GetAnthropicToolDefinitions())
         };
         var messaging = services.GetRequiredService<IMessagingProvider>();
