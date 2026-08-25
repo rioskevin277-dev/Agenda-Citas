@@ -408,7 +408,7 @@ AgendaApi.sln
 ├── AgendaApi.Application/     # Casos de uso + DTOs
 ├── AgendaApi.Infrastructure/  # Adaptadores (EF Core, Google, WhatsApp, AI)
 ├── AgendaApi.Api/             # Host web (controllers, OAuth, webhook)
-├── AgendaApi.Tests/           # Tests unitarios (139 tests)
+├── AgendaApi.Tests/           # Tests unitarios (170 tests)
 ├── deploy/                    # Scripts de deploy
 ├── scripts/                   # Scripts (start, seed, test webhook/full flow)
 ├── docker-compose.yml         # Orquestación (sqlserver + api)
@@ -424,7 +424,7 @@ AgendaApi.sln
 
 ```bash
 dotnet test AgendaApi.sln
-# 139/139 superados
+# 170/170 superados
 ```
 
 Cubre casos de uso clave: disponibilidad, creación/cancelación/reprogramación/confirmación de citas,
