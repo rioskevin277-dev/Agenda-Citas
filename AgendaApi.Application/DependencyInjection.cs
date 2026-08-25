@@ -17,6 +17,7 @@ public static class DependencyInjection
         services.AddScoped<CheckAvailabilityUseCase>();
         services.AddScoped<CreateAppointmentUseCase>();
         services.AddScoped<CancelAppointmentUseCase>();
+        services.AddScoped<CancelAllAppointmentsUseCase>();
         services.AddScoped<RescheduleAppointmentUseCase>();
         services.AddScoped<ConfirmAppointmentUseCase>();
         services.AddScoped<SyncExternalChangesUseCase>();

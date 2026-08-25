@@ -17,6 +17,7 @@ public static class AppointmentToolDefinitions
             CheckAvailabilityTool(),
             CreateAppointmentTool(),
             CancelAppointmentTool(),
+            CancelAllAppointmentsTool(),
             RescheduleAppointmentTool(),
             ConfirmAppointmentTool(),
             ListAppointmentsTool(),
@@ -34,6 +35,7 @@ public static class AppointmentToolDefinitions
             CheckAvailabilityToolAnthropic(),
             CreateAppointmentToolAnthropic(),
             CancelAppointmentToolAnthropic(),
+            CancelAllAppointmentsToolAnthropic(),
             RescheduleAppointmentToolAnthropic(),
             ConfirmAppointmentToolAnthropic(),
             ListAppointmentsToolAnthropic(),
@@ -176,6 +178,29 @@ public static class AppointmentToolDefinitions
                         }
                     },
                     required = new[] { "appointment_identifier" }
+                }
+            }
+        };
+    }
+
+    private static object CancelAllAppointmentsTool()
+    {
+        return new
+        {
+            type = "function",
+            function = new
+            {
+                name = "cancel_all_appointments",
+                description = "Cancela TODAS las citas activas (pendientes/confirmadas) y futuras del cliente en UNA sola operación atómica. " +
+                              "Usarla SIEMPRE que el cliente pida cancelar varias o todas sus citas (ej: \"cancela todas mis citas\"), " +
+                              "en lugar de llamar cancel_appointment varias veces: es una sola llamada y evita cancelaciones a medias. " +
+                              "No requiere datos adicionales: usa el WhatsApp del cliente actual. " +
+                              "Si el cliente pide cancelar UNA cita específica, usar cancel_appointment.",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new { },
+                    required = Array.Empty<string>()
                 }
             }
         };
@@ -343,6 +368,22 @@ public static class AppointmentToolDefinitions
                     motivo = new { type = "string", description = "Motivo opcional" }
                 },
                 required = new[] { "appointment_identifier" }
+            }
+        };
+    }
+
+    private static object CancelAllAppointmentsToolAnthropic()
+    {
+        return new
+        {
+            name = "cancel_all_appointments",
+            description = "Cancela TODAS las citas activas (pendientes/confirmadas) y futuras del cliente en una sola operación atómica. " +
+                          "Usarla cuando el cliente pida cancelar varias o todas sus citas; no requiere datos adicionales.",
+            input_schema = new
+            {
+                type = "object",
+                properties = new { },
+                required = Array.Empty<string>()
             }
         };
     }

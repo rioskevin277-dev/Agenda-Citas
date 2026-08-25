@@ -52,6 +52,20 @@ public record AppointmentCancelDto
     public string? Motivo { get; init; }
 }
 
+/// <summary>Resultado de la cancelación atómica de TODAS las citas activas de un cliente.</summary>
+public record CancelAllAppointmentsResultDto
+{
+    /// <summary>Cantidad de citas canceladas localmente (commit único).</summary>
+    public int CancelledCount { get; init; }
+
+    /// <summary>Mensaje listo para retransmitir al cliente a través del orquestador.</summary>
+    public string Message { get; init; } = string.Empty;
+
+    /// <summary>Fallos de cancelación en el calendario externo por cita
+    /// (la cancelación local igualmente se completa): descripción legible por el modelo.</summary>
+    public IReadOnlyList<string> CalendarFailures { get; init; } = Array.Empty<string>();
+}
+
 public record AppointmentResponseDto
 {
     public Guid Id { get; init; }

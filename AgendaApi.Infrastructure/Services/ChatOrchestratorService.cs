@@ -558,6 +558,7 @@ public class ChatOrchestratorService
         int signals = 0;
 
         string[] tools = { "check_availability", "create_appointment", "cancel_appointment",
+                                 "cancel_all_appointments",
                                  "confirm_appointment", "reschedule_appointment", "list_appointments",
                                  "add_to_waitlist" };
         if (tools.Any(t.Contains)) signals++;
@@ -597,6 +598,7 @@ public class ChatOrchestratorService
                 "check_availability" => await CheckAvailabilityAsync(args, services, tenantId, ct),
                 "create_appointment" => await CreateAppointmentAsync(args, services, tenantId, userPhone, clientName, ct),
                 "cancel_appointment" => await CancelAppointmentAsync(args, services, tenantId, ct),
+                "cancel_all_appointments" => await CancelAllAppointmentsAsync(services, tenantId, userPhone, ct),
                 "confirm_appointment" => await ConfirmAppointmentAsync(args, services, tenantId, ct),
                 "reschedule_appointment" => await RescheduleAppointmentAsync(args, services, tenantId, ct),
                 "list_appointments" => await ListAppointmentsAsync(args, services, tenantId, ct),
@@ -714,6 +716,7 @@ HERRAMIENTAS DISPONIBLES:
 - check_availability: Consultar horarios disponibles
 - create_appointment: Agendar una cita
 - cancel_appointment: Cancelar una cita existente
+- cancel_all_appointments: Cancelar TODAS las citas activas del cliente de una sola vez (usar cuando pida cancelar todas o varias de sus citas)
 - confirm_appointment: Confirmar una cita (cliente respondio CONFIRMAR)
 - reschedule_appointment: Reprogramar una cita
 - list_appointments: Listar las citas del cliente
@@ -854,6 +857,32 @@ HERRAMIENTAS DISPONIBLES:
                 id = response.Id,
                 status = response.Status
             }
+        });
+    }
+
+    /// <summary>
+    /// Cancelación atómica de TODAS las citas activas del cliente (el remitente): una sola
+    /// llamada de tool reemplaza N round-trips de cancel_appointment y un único commit local.
+    /// La identidad del cliente es implícita: el WhatsApp del remitente real.
+    /// </summary>
+    private async Task<string> CancelAllAppointmentsAsync(
+        IServiceProvider services,
+        Guid tenantId,
+        string userPhone,
+        CancellationToken ct)
+    {
+        var useCase = services.GetRequiredService<Application.UseCases.CancelAllAppointmentsUseCase>();
+
+        var response = await useCase.ExecuteAsync(userPhone, tenantId, ct);
+
+        // success=true también con cancelledCount=0: "no tienes citas" no es un error;
+        // el mensaje le dice al modelo qué relayar al cliente.
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            cancelledCount = response.CancelledCount,
+            message = response.Message,
+            calendarFailures = response.CalendarFailures
         });
     }
 
@@ -1081,6 +1110,7 @@ HERRAMIENTAS DISPONIBLES:
                         _conversationState.SetPendingBooking(conversationKey, null);
                     break;
                 case "cancel_appointment":
+                case "cancel_all_appointments":
                     _conversationState.SetPendingBooking(conversationKey, null);
                     break;
                 case "check_availability":
