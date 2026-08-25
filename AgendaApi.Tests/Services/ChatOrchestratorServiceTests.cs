@@ -42,7 +42,12 @@ public class ChatOrchestratorServiceTests
         ChatOrchestratorService Service,
         ServiceProvider Provider,
         Mock<IMessagingProvider> Messaging,
-        Mock<ITurnFailureRepository> TurnFailures);
+        Mock<ITurnFailureRepository> TurnFailures,
+        Mock<IUnitOfWork> UnitOfWork,
+        IReadOnlyList<string> PersistenceCalls);
+
+    private const string FailureAdded = "turn-failure-added";
+    private const string ChangesSaved = "changes-saved";
 
     /// <summary>
     /// Contenedor mínimo con TODO lo que ProcessMessageAsync resuelve del scope antes y durante
@@ -57,6 +62,16 @@ public class ChatOrchestratorServiceTests
             .ReturnsAsync((string?)null);
 
         var turnFailures = new Mock<ITurnFailureRepository>();
+
+        // Bitácora ordenada de persistencia: prueba que el registro de fallo se COMITEA a la
+        // base (SaveChanges DESPUÉS del Add), no solo agregado al DbContext en memoria. Un
+        // conteo plano de SaveChangesAsync no sirve acá: el historial de mensajes también
+        // guarda (PersistMessageAsync) y ese conteo es ajeno a esta garantía.
+        var persistenceCalls = new List<string>();
+        turnFailures
+            .Setup(r => r.AddAsync(It.IsAny<TurnFailure>(), It.IsAny<CancellationToken>()))
+            .Callback(() => persistenceCalls.Add(FailureAdded))
+            .Returns(Task.CompletedTask);
 
         var tenantRepo = new Mock<ITenantRepository>();
         tenantRepo
@@ -78,6 +93,7 @@ public class ChatOrchestratorServiceTests
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork
             .Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .Callback(() => persistenceCalls.Add(ChangesSaved))
             .ReturnsAsync(1);
 
         var services = new ServiceCollection();
@@ -113,7 +129,7 @@ public class ChatOrchestratorServiceTests
             provider.GetRequiredService<ConversationStateService>(),
             NullLogger<ChatOrchestratorService>.Instance);
 
-        return new Sut(sut, provider, messaging, turnFailures);
+        return new Sut(sut, provider, messaging, turnFailures, unitOfWork, persistenceCalls);
     }
 
     [Fact]
@@ -134,6 +150,10 @@ public class ChatOrchestratorServiceTests
                     && f.Detalle.Contains("Anthropic")),
                 It.IsAny<CancellationToken>()),
             Times.Once);
+
+        // El registro de fallo se COMITEA: hubo SaveChangesAsync DESPUÉS del AddAsync.
+        // Sin esta prueba, una regresión que suelte el commit pasaría desapercibida.
+        sut.PersistenceCalls.Should().ContainInOrder(FailureAdded, ChangesSaved);
 
         // El cliente IGUAL recibe el genérico: la observabilidad no altera la respuesta.
         sut.Messaging.Verify(
@@ -158,6 +178,9 @@ public class ChatOrchestratorServiceTests
                     && f.PhoneCliente == UserId),
                 It.IsAny<CancellationToken>()),
             Times.Once);
+
+        // El registro de timeout también se COMITEA (SaveChangesAsync después del AddAsync).
+        sut.PersistenceCalls.Should().ContainInOrder(FailureAdded, ChangesSaved);
 
         sut.Messaging.Verify(
             m => m.SendTextAsync(Phone, GenericReply, It.IsAny<CancellationToken>()),

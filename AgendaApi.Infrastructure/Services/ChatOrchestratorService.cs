@@ -1205,7 +1205,7 @@ RESERVA EN CURSO: el cliente estaba armando una cita (" + string.Join(" ", parte
             {
                 IdTurnFailure = Guid.NewGuid(),
                 IdTenant = tenantId,
-                PhoneCliente = userId ?? "",
+                PhoneCliente = userId?.Length > 200 ? userId[..200] : userId ?? "",
                 Motivo = motivo,
                 Detalle = detalle.Length > 2000 ? detalle[..2000] : detalle
             }, timeoutCts.Token);

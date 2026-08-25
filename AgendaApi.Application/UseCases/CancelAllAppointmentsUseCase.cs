@@ -1,6 +1,7 @@
 using AgendaApi.Application.DTOs;
 using AgendaApi.Domain.Ports;
 using AgendaApi.Domain.Services;
+using Microsoft.Extensions.Logging;
 
 namespace AgendaApi.Application.UseCases;
 
@@ -19,19 +20,22 @@ public class CancelAllAppointmentsUseCase
     private readonly IClientRepository _clientRepo;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWaitlistNotifier _waitlistNotifier;
+    private readonly ILogger<CancelAllAppointmentsUseCase> _logger;
 
     public CancelAllAppointmentsUseCase(
         IAppointmentRepository appointmentRepo,
         IClientRepository clientRepo,
         ICalendarProviderFactory providerFactory,
         IUnitOfWork unitOfWork,
-        IWaitlistNotifier waitlistNotifier)
+        IWaitlistNotifier waitlistNotifier,
+        ILogger<CancelAllAppointmentsUseCase> logger)
     {
         _appointmentRepo = appointmentRepo;
         _clientRepo = clientRepo;
         _providerFactory = providerFactory;
         _unitOfWork = unitOfWork;
         _waitlistNotifier = waitlistNotifier;
+        _logger = logger;
     }
 
     /// <summary>Mensaje para el cliente cuando no hay nada activo que cancelar.</summary>
@@ -82,6 +86,9 @@ public class CancelAllAppointmentsUseCase
                 if (provider != null)
                     await provider.CancelEventAsync(cita.IdTenant, cita.ExternalEventId, null, ct);
             }
+            // La cancelación del turno NO es un fallo de calendario: sin este rethrow, cada cita
+            // restante se registraba como fallo falso cuando ct disparaba a mitad del loop.
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
                 System.Console.WriteLine($"[CancelAllAppointments] Error cancelando evento externo {cita.ExternalEventId}: {ex.Message}");
@@ -105,7 +112,22 @@ public class CancelAllAppointmentsUseCase
         ClientStateCalculator.ApplyDerivedState(client, citas, DateTime.UtcNow);
         await _clientRepo.UpdateAsync(client, ct);
 
-        await _unitOfWork.SaveChangesAsync(ct);
+        // El commit local puede fallar DESPUÉS de que las cancelaciones externas ya
+        // sucedieron: sin este log, la lista de fallos de calendario muere con la excepción
+        // y la divergencia entre calendario externo y BD local es invisible. Se registra el
+        // contexto y SE RELANZA la excepción original: no se traga ni cambia el happy path.
+        try
+        {
+            await _unitOfWork.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "[CancelAllAppointments] Commit local falló tras cancelar {CancelledCount} cita(s); eventos externos NO quitados del calendario: {CalendarFailures}",
+                activas.Count,
+                calendarFailures.Count > 0 ? string.Join(" | ", calendarFailures) : "(ninguno)");
+            throw;
+        }
 
         // P1 Lista de espera (fast path): los cupos liberados pueden matchear entradas en
         // espera. Se dispara tras el commit; no-fatal (el job lo reintenta).

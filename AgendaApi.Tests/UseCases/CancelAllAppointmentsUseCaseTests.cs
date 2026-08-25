@@ -2,6 +2,7 @@ using AgendaApi.Application.UseCases;
 using AgendaApi.Domain.Entities;
 using AgendaApi.Domain.Ports;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Moq;
 
 namespace AgendaApi.Tests.UseCases;
@@ -14,6 +15,7 @@ public class CancelAllAppointmentsUseCaseTests
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
     private readonly Mock<ICalendarProvider> _calendarProvider = new();
     private readonly Mock<IWaitlistNotifier> _waitlistNotifier = new();
+    private readonly Mock<ILogger<CancelAllAppointmentsUseCase>> _logger = new();
 
     private readonly CancelAllAppointmentsUseCase _useCase;
 
@@ -27,7 +29,8 @@ public class CancelAllAppointmentsUseCaseTests
             _clientRepo.Object,
             _providerFactory.Object,
             _unitOfWork.Object,
-            _waitlistNotifier.Object);
+            _waitlistNotifier.Object,
+            _logger.Object);
     }
 
     [Fact]
@@ -161,6 +164,50 @@ public class CancelAllAppointmentsUseCaseTests
         result!.CancelledCount.Should().Be(0);
         result.Message.Should().NotBeNullOrWhiteSpace();
         _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenLocalSaveThrows_Propagates_AndLogsErrorWithContext()
+    {
+        // Arrange: el peor caso de divergencia — el calendario externo YA falló para una cita
+        // y el commit local también revienta. Sin log, la lista de fallos muere con la excepción.
+        var clientId = Guid.NewGuid();
+        var client = new Client { IdClient = clientId, WhatsApp = WhatsApp };
+        var actives = new List<Appointment>
+        {
+            NewAppointment(clientId, "pending", DateTime.UtcNow.AddDays(1), "ext_1")
+        };
+
+        _clientRepo.Setup(r => r.GetByWhatsAppAsync(WhatsApp, TenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(client);
+        _appointmentRepo.Setup(r => r.GetByClientIdAsync(clientId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(actives);
+        _providerFactory.Setup(f => f.GetProviderAsync(TenantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(_calendarProvider.Object);
+        _calendarProvider.Setup(p => p.CancelEventAsync(TenantId, It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Google API down"));
+
+        var dbError = new InvalidOperationException("db down");
+        _unitOfWork.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(dbError);
+
+        // Act
+        Func<Task> act = () => _useCase.ExecuteAsync(WhatsApp, TenantId);
+
+        // Assert: la excepción original se propaga (no se traga)...
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("db down");
+
+        // ...y la divergencia cross-system queda visible en el log de errores (conteo +
+        // eventos externos que no se pudieron quitar del calendario).
+        _logger.Verify(
+            l => l.Log(
+                LogLevel.Error,
+                It.IsAny<EventId>(),
+                It.Is<It.IsAnyType>((state, _) =>
+                    state.ToString()!.Contains("ext_1")),
+                dbError,
+                It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
+            Times.Once);
     }
 
     private static Appointment NewAppointment(Guid clientId, string estado, DateTime fechaInicio, string? externalEventId)
