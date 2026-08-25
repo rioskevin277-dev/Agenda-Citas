@@ -18,6 +18,11 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
   </ItemGroup>
 
+  <!-- Los tests de controladores necesitan los tipos de ASP.NET Core (IActionResult, etc.). -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
   <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
@@ -26,6 +31,7 @@
     <ProjectReference Include="..\AgendaApi.Domain\AgendaApi.Domain.csproj" />
     <ProjectReference Include="..\AgendaApi.Application\AgendaApi.Application.csproj" />
     <ProjectReference Include="..\AgendaApi.Infrastructure\AgendaApi.Infrastructure.csproj" />
+    <ProjectReference Include="..\AgendaApi.Api\AgendaApi.Api.csproj" />
   </ItemGroup>
 
 </Project>

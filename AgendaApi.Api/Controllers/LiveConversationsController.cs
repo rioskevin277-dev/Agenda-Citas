@@ -25,6 +25,7 @@ public class LiveConversationsController : ControllerBase
 {
     private readonly IConversationHistoryRepository _conversationRepo;
     private readonly ITenantRepository _tenantRepo;
+    private readonly ITurnFailureRepository _turnFailureRepo;
     private readonly IConfiguration _configuration;
     private readonly IWebHostEnvironment _env;
     private readonly ILogger<LiveConversationsController> _logger;
@@ -32,15 +33,21 @@ public class LiveConversationsController : ControllerBase
     // Cap de filas por poll para no traer rangos enormes. El cliente incrementa con ?after=.
     private const int DefaultLimit = 200;
 
+    // Tope del endpoint /failures (causas de turnos perdidos): lectura esporádica de diagnóstico,
+    // no polling; con 100 alcanza para revisar los últimos fallos.
+    private const int DefaultFailureLimit = 100;
+
     public LiveConversationsController(
         IConversationHistoryRepository conversationRepo,
         ITenantRepository tenantRepo,
+        ITurnFailureRepository turnFailureRepo,
         IConfiguration configuration,
         IWebHostEnvironment env,
         ILogger<LiveConversationsController> logger)
     {
         _conversationRepo = conversationRepo;
         _tenantRepo = tenantRepo;
+        _turnFailureRepo = turnFailureRepo;
         _configuration = configuration;
         _env = env;
         _logger = logger;
@@ -102,6 +109,37 @@ public class LiveConversationsController : ControllerBase
         });
 
         return Ok(new { messages = dtos });
+    }
+
+    /// <summary>
+    /// Últimos fallos de turno (timeout del turno o todos los proveedores de IA fallaron) de TODOS
+    /// los tenants, más recientes primero. La causa legible del genérico "Lo siento..." sin SSH:
+    /// cada fila trae motivo y detalle por proveedor. Misma clave que /conversations.
+    /// </summary>
+    [HttpGet("failures")]
+    public async Task<IActionResult> Failures(
+        [FromQuery] string key,
+        [FromQuery] int limit = DefaultFailureLimit,
+        CancellationToken ct = default)
+    {
+        if (!IsValidKey(key))
+            return Unauthorized(new { error = "Clave de dashboard inválida" });
+
+        limit = Math.Clamp(limit, 1, 200);
+
+        var failures = await _turnFailureRepo.GetLatestAsync(limit, ct);
+
+        return Ok(new
+        {
+            failures = failures.Select(f => new
+            {
+                id = f.IdTurnFailure,
+                time = f.FechaCreacion,
+                motivo = f.Motivo,
+                detalle = f.Detalle,
+                phone = f.PhoneCliente
+            })
+        });
     }
 
     private bool IsValidKey(string? clientKey)

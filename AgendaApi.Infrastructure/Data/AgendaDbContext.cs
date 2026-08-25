@@ -19,6 +19,7 @@ public class AgendaDbContext : DbContext
     public DbSet<ReminderLog> ReminderLogs => Set<ReminderLog>();
     public DbSet<ConversationMessage> ConversationMessages => Set<ConversationMessage>();
     public DbSet<WaitlistEntry> WaitlistEntries => Set<WaitlistEntry>();
+    public DbSet<TurnFailure> TurnFailures => Set<TurnFailure>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -280,6 +281,19 @@ public class AgendaDbContext : DbContext
             // Cola FIFO por servicio/profesional + barrido global del job.
             entity.HasIndex(e => new { e.IdTenant, e.Estado });
             entity.HasIndex(e => new { e.IdTenant, e.IdServiceType, e.IdProfessional, e.Estado });
+        });
+
+        // --- TurnFailure (causa durable de los turnos que caen al genérico "Lo siento") ---
+        modelBuilder.Entity<TurnFailure>(entity =>
+        {
+            entity.ToTable("turn_failures");
+            entity.HasKey(e => e.IdTurnFailure);
+            entity.Property(e => e.PhoneCliente).HasMaxLength(200);
+            entity.Property(e => e.Motivo).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.Detalle).HasMaxLength(2000);
+            entity.Property(e => e.FechaCreacion).HasDefaultValueSql("GETUTCDATE()");
+            // Lectura del dashboard: últimos fallos globales por fecha.
+            entity.HasIndex(e => e.FechaCreacion);
         });
     }
 }

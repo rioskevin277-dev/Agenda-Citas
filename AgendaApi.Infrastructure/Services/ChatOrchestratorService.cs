@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using AgendaApi.Application.Support;
 using AgendaApi.Application.Tools;
@@ -189,8 +190,10 @@ public class ChatOrchestratorService
             // Probar la cadena de proveedores con reintentos tolerantes a fallos transitorios
             // (429/rate-limit o timeout de los tier :free). Un tropiezo puntual de un proveedor
             // ya no tumba el turno al genérico "Lo siento, tuve un problema" de inmediato.
-            var (usedProvider, result) =
+            var chainStartedAt = Stopwatch.GetTimestamp();
+            var (usedProvider, result, providerLastErrors, attemptsMade) =
                 await TryGenerateWithRetryAsync(aiProviders, messages, ct);
+            var chainElapsedMs = Stopwatch.GetElapsedTime(chainStartedAt).TotalMilliseconds;
 
             if (usedProvider == null)
             {
@@ -202,17 +205,31 @@ public class ChatOrchestratorService
                 await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userId, "assistant", errorText, deliveryToken);
                 await messaging.SendTextAsync(replyTo, errorText);
 
+                // Causa del turno perdido: timeout del presupuesto del turno ("timeout") o cadena
+                // de proveedores agotada ("all_providers_failed"). El resumen por proveedor alimenta
+                // el log Y el registro durable (GET api/v1/dashboard/failures), legible sin SSH.
+                var motivo = ct.IsCancellationRequested ? "timeout" : "all_providers_failed";
+                var resumenProveedores = string.Join(" | ", aiProviders.Select(p =>
+                    $"{p.Name}: {(providerLastErrors.TryGetValue(p.Name, out var err) ? err : "(sin error registrado)")}"));
+
                 // El timeout del turno (se dispara cuando la IA tarda demasiado, p. ej. por el rate-limit
                 // de Groq que hace lenta la generación) no debe confundirse con un fallo de todos
                 // los proveedores: se registra y ya se respondió el genérico.
                 if (ct.IsCancellationRequested)
                 {
-                    _logger.LogWarning("[Orchestrator] Turno cancelado por timeout antes de obtener respuesta de la IA");
+                    _logger.LogWarning(
+                        "[Orchestrator] Turno cancelado por timeout antes de obtener respuesta de la IA: {Attempts} intentos sobre la cadena de proveedores en {Elapsed:F0} ms",
+                        attemptsMade, chainElapsedMs);
                 }
                 else
                 {
-                    _logger.LogError("[Orchestrator] Todos los proveedores fallaron: {Error}", result.TextContent);
+                    _logger.LogError(
+                        "[Orchestrator] Todos los proveedores fallaron tras {Attempts} intentos ({Elapsed:F0} ms). Último error por proveedor: {Resumen}",
+                        attemptsMade, chainElapsedMs, resumenProveedores);
                 }
+
+                await PersistTurnFailureAsync(services, tenantId, userId, motivo,
+                    $"intentos={attemptsMade}; elapsed_ms={chainElapsedMs:F0}; {resumenProveedores}");
                 return;
             }
             _logger.LogInformation("[Orchestrator] Respondiendo con {Provider}", usedProvider);
@@ -475,14 +492,19 @@ public class ChatOrchestratorService
     /// Prueba la cadena de proveedores de IA con reintentos tolerantes a fallos TRANSITORIOS
     /// (429/rate-limit o timeout de los tier :free). Sin esto, un solo tropiezo puntual de todos
     /// los proveedores en el primer pase tumbaba el turno al genérico "Lo siento, tuve un problema".
+    /// Además devuelve, por proveedor, el último error visto y cuántos intentos se hicieron: sin
+    /// ese rastro, la causa del turno perdido era invisible (el catch anterior era vacío).
     /// </summary>
-    private static async Task<(string? Provider, AiToolCallResult Result)> TryGenerateWithRetryAsync(
+    private async Task<(string? Provider, AiToolCallResult Result, Dictionary<string, string> LastErrors, int Attempts)> TryGenerateWithRetryAsync(
         (string Name, IAiProvider Provider, List<object> Tools)[] aiProviders,
         List<ChatMessage> messages,
         CancellationToken ct)
     {
         AiToolCallResult result = new() { Success = false };
         string? usedProvider = null;
+        var lastErrors = new Dictionary<string, string>();
+        int attempts = 0;
+        var chainStart = Stopwatch.GetTimestamp();
 
         // 2 pases: el inicial + un reintento con pausa para dar margen al rate-limit.
         for (int attempt = 0; attempt < 2 && usedProvider == null; attempt++)
@@ -494,6 +516,7 @@ public class ChatOrchestratorService
 
             foreach (var p in aiProviders)
             {
+                attempts++;
                 try
                 {
                     result = await p.Provider.GenerateResponseWithToolsAsync(messages, p.Tools, ct);
@@ -502,16 +525,25 @@ public class ChatOrchestratorService
                         usedProvider = p.Name;
                         break;
                     }
+                    // El proveedor respondió con fallo (4xx/5xx ya manejado por cada adaptador):
+                    // queda como su último error para el resumen del turno fallido.
+                    lastErrors[p.Name] = Truncate(result.TextContent ?? "(sin contenido)", 300);
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
-                    // fallo transitorio (incl. timeout del turno): se reintenta en el siguiente
-                    // pase / proveedor; si todos fallan, se degrada en el punto de llamada.
+                    // Antes este catch era vacío y la causa del turno perdido era invisible.
+                    // Se registra (proveedor, pase/intento y ms transcurridos) y se guarda el mensaje
+                    // para el resumen final si TODOS los proveedores terminan fallando. El control
+                    // de flujo no cambia: se reintenta en el siguiente pase/proveedor igual que antes.
+                    lastErrors[p.Name] = Truncate(ex.Message, 300);
+                    _logger.LogWarning(ex,
+                        "[Orchestrator] Proveedor {Provider} falló (pase {Pass}, intento {Attempt}, {Elapsed:F0} ms desde el inicio de la cadena): {Msg}",
+                        p.Name, attempt + 1, attempts, Stopwatch.GetElapsedTime(chainStart).TotalMilliseconds, ex.Message);
                 }
             }
         }
 
-        return (usedProvider, result);
+        return (usedProvider, result, lastErrors, attempts);
     }
 
     /// <summary>
@@ -1115,6 +1147,44 @@ HERRAMIENTAS DISPONIBLES:
         return @"
 
 RESERVA EN CURSO: el cliente estaba armando una cita (" + string.Join(" ", partes) + @") y no la completó. Si el cliente retoma el tema de agendar, reconocé lo que tenía en marcha y retomá pidiendo solo lo que falta (idealmente el horario). NO des la cita por hecha: usá check_availability y luego create_appointment.";
+    }
+
+    /// <summary>
+    /// Persiste la causa del turno fallido (timeout o todos los proveedores de IA fallaron) para
+    /// poder diagnosticarla en producción vía GET api/v1/dashboard/failures sin depender de los
+    /// logs del contenedor. Falla silencioso: registrar la causa NUNCA debe alterar ni bloquear
+    /// la respuesta al cliente.
+    /// </summary>
+    private async Task PersistTurnFailureAsync(
+        IServiceProvider services,
+        Guid tenantId,
+        string userId,
+        string motivo,
+        string detalle)
+    {
+        try
+        {
+            // Token PROPIO (no el del turno): cuando se llega acá por timeout el token del turno
+            // ya está cancelado y todo SaveChanges con él revienta. Techo de 5 s para no colgar
+            // el turno si la BD está lenta.
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+            var turnFailureRepo = services.GetRequiredService<ITurnFailureRepository>();
+            var unitOfWork = services.GetRequiredService<IUnitOfWork>();
+            await turnFailureRepo.AddAsync(new Domain.Entities.TurnFailure
+            {
+                IdTurnFailure = Guid.NewGuid(),
+                IdTenant = tenantId,
+                PhoneCliente = userId ?? "",
+                Motivo = motivo,
+                Detalle = detalle.Length > 2000 ? detalle[..2000] : detalle
+            }, timeoutCts.Token);
+            await unitOfWork.SaveChangesAsync(timeoutCts.Token);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Orchestrator] No se pudo persistir el registro de fallo de turno ({Motivo})", motivo);
+        }
     }
 
     /// <summary>

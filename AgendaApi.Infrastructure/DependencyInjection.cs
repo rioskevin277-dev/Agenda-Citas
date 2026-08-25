@@ -127,6 +127,7 @@ public static class DependencyInjection
         // CRM: memoria operativa del cliente para ADAM (contexto del cliente para la IA)
         services.AddScoped<ClientContextService>();
         services.AddScoped<IConversationHistoryRepository, ConversationHistoryRepository>();
+        services.AddScoped<ITurnFailureRepository, TurnFailureRepository>();
 
         services.AddScoped<ChatOrchestratorService>();
 

@@ -197,3 +197,15 @@ public interface IWaitlistEntryRepository
     Task<WaitlistEntry> CreateAsync(WaitlistEntry entry, CancellationToken ct = default);
     Task UpdateAsync(WaitlistEntry entry, CancellationToken ct = default);
 }
+
+/// <summary>
+/// Puerto para el registro durable de fallos de turno (timeout del turno o todos los proveedores
+/// de IA fallaron): deja la causa legible del genérico "Lo siento..." en producción sin revisar logs.
+/// </summary>
+public interface ITurnFailureRepository
+{
+    Task AddAsync(TurnFailure failure, CancellationToken ct = default);
+
+    /// <summary>Últimos N fallos de TODOS los tenants (más recientes primero). Para el dashboard.</summary>
+    Task<List<TurnFailure>> GetLatestAsync(int limit, CancellationToken ct = default);
+}
