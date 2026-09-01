@@ -7,23 +7,24 @@ using Microsoft.Extensions.Logging;
 namespace AgendaApi.Infrastructure.AiProviders;
 
 /// <summary>
-/// Transcribe audio a texto con Groq (Whisper), compatible con la API de OpenAI
-/// (/audio/transcriptions). Mismo patrón de clave que <see cref="GroqProvider"/>
-/// (Groq__ApiKey / GROQ_API_KEY).
-/// Modelo por defecto: whisper-large-v3-turbo (rápido y barato).
+/// Transcribe audio a texto con OpenAI (Whisper, endpoint /audio/transcriptions).
+/// Reutiliza la misma API key que <see cref="OpenAIProvider"/> (OpenAI__ApiKey / OPENAI_API_KEY),
+/// ya validada y en uso por el proveedor principal de chat, evitando depender de una key de
+/// Groq separada que estaba como placeholder y rompía la transcripción (Unauthorized).
+/// Modelo por defecto: whisper-1 (compatible con el endpoint de transcripción de OpenAI).
 /// </summary>
-public class GroqSpeechToTextProvider : ISpeechToTextProvider
+public class OpenAISpeechToTextProvider : ISpeechToTextProvider
 {
     private readonly HttpClient _httpClient;
-    private readonly ILogger<GroqSpeechToTextProvider> _logger;
-    private const string ApiUrl = "https://api.groq.com/openai/v1/audio/transcriptions";
-    private const string Model = "whisper-large-v3-turbo";
+    private readonly ILogger<OpenAISpeechToTextProvider> _logger;
+    private const string ApiUrl = "https://api.openai.com/v1/audio/transcriptions";
+    private const string Model = "whisper-1";
 
-    public GroqSpeechToTextProvider(
+    public OpenAISpeechToTextProvider(
         IHttpClientFactory httpClientFactory,
-        ILogger<GroqSpeechToTextProvider> logger)
+        ILogger<OpenAISpeechToTextProvider> logger)
     {
-        _httpClient = httpClientFactory.CreateClient("groq-api");
+        _httpClient = httpClientFactory.CreateClient("openai-api");
         _logger = logger;
     }
 
@@ -50,18 +51,18 @@ public class GroqSpeechToTextProvider : ISpeechToTextProvider
 
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogError("[GroqSTT] Error en API: {StatusCode} - {Response}", response.StatusCode, json);
+            _logger.LogError("[OpenAI STT] Error en API: {StatusCode} - {Response}", response.StatusCode, json);
             return null;
         }
 
-        var data = JsonSerializer.Deserialize<GroqTranscriptionResponse>(json);
+        var data = JsonSerializer.Deserialize<OpenAiTranscriptionResponse>(json);
         var text = data?.Text?.Trim();
         if (string.IsNullOrWhiteSpace(text))
             return null;
         return text;
     }
 
-    /// <summary>Nombre de archivo en el multipart según el MIME (Groq lo usa para elegir el decoder).</summary>
+    /// <summary>Nombre de archivo en el multipart según el MIME (Whisper lo usa para elegir el decoder).</summary>
     private static string ResolveFileName(string mimeType)
     {
         // Quitar parámetros de MIME ("audio/ogg; codecs=opus" → "audio/ogg") antes de elegir.
@@ -89,16 +90,22 @@ public class GroqSpeechToTextProvider : ISpeechToTextProvider
 
     private string GetApiKey()
     {
-        var envKey = Environment.GetEnvironmentVariable("Groq__ApiKey");
+        var envKey = Environment.GetEnvironmentVariable("OpenAI__ApiKey");
         if (string.IsNullOrWhiteSpace(envKey))
-            envKey = Environment.GetEnvironmentVariable("GROQ_API_KEY");
+            envKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
         if (!string.IsNullOrWhiteSpace(envKey))
+        {
+            // Misma defensa que OpenAIProvider: no gastar una llamada 401 si la key es placeholder.
+            if (envKey.Contains("xxx", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    "OpenAI API Key parece ser un placeholder (contiene 'xxx'). Configurar una key real en OpenAI__ApiKey");
             return envKey;
+        }
 
-        throw new InvalidOperationException("No se encontró Groq API Key para STT. Configurar Groq__ApiKey");
+        throw new InvalidOperationException("No se encontró OpenAI API Key para STT. Configurar OpenAI__ApiKey");
     }
 
-    private class GroqTranscriptionResponse
+    private class OpenAiTranscriptionResponse
     {
         [JsonPropertyName("text")]
         public string? Text { get; set; }

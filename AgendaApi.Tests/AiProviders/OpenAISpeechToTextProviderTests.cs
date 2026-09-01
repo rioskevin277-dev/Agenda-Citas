@@ -11,34 +11,34 @@ using Xunit;
 namespace AgendaApi.Tests.AiProviders;
 
 [Collection("GroqEnv")]
-public class GroqSpeechToTextProviderTests
+public class OpenAISpeechToTextProviderTests
 {
-    private const string ApiKey = "gsk_test_api_key";
+    private const string ApiKey = "sk-test_openai_key";
 
-    private static GroqSpeechToTextProvider CreateProvider(FakeHttpHandler handler)
+    private static OpenAISpeechToTextProvider CreateProvider(FakeHttpHandler handler)
     {
         var factory = new FakeHttpClientFactory(handler);
-        return new GroqSpeechToTextProvider(factory, NullLogger<GroqSpeechToTextProvider>.Instance);
+        return new OpenAISpeechToTextProvider(factory, NullLogger<OpenAISpeechToTextProvider>.Instance);
     }
 
     [Fact]
     public async Task TranscribeAsync_WithValidAudio_ReturnsText()
     {
-        Environment.SetEnvironmentVariable("Groq__ApiKey", ApiKey);
+        Environment.SetEnvironmentVariable("OpenAI__ApiKey", ApiKey);
         var handler = new FakeHttpHandler(HttpStatusCode.OK, """{"text":"Hola, quiero agendar una cita para mañana"}""");
         var provider = CreateProvider(handler);
 
         var result = await provider.TranscribeAsync(new byte[] { 1, 2, 3 }, "audio/ogg");
 
         result.Should().Be("Hola, quiero agendar una cita para mañana");
-        handler.LastUrl.Should().Be("https://api.groq.com/openai/v1/audio/transcriptions");
+        handler.LastUrl.Should().Be("https://api.openai.com/v1/audio/transcriptions");
         handler.LastAuthorization.Should().Be($"Bearer {ApiKey}");
     }
 
     [Fact]
     public async Task TranscribeAsync_ApiError_ReturnsNull()
     {
-        Environment.SetEnvironmentVariable("Groq__ApiKey", ApiKey);
+        Environment.SetEnvironmentVariable("OpenAI__ApiKey", ApiKey);
         var provider = CreateProvider(new FakeHttpHandler(HttpStatusCode.InternalServerError, "error"));
 
         var result = await provider.TranscribeAsync(new byte[] { 1, 2, 3 }, "audio/ogg");
@@ -49,7 +49,7 @@ public class GroqSpeechToTextProviderTests
     [Fact]
     public async Task TranscribeAsync_EmptyText_ReturnsNull()
     {
-        Environment.SetEnvironmentVariable("Groq__ApiKey", ApiKey);
+        Environment.SetEnvironmentVariable("OpenAI__ApiKey", ApiKey);
         var provider = CreateProvider(new FakeHttpHandler(HttpStatusCode.OK, """{"text":"   "}"""));
 
         var result = await provider.TranscribeAsync(new byte[] { 1, 2, 3 }, "audio/ogg");
@@ -60,7 +60,7 @@ public class GroqSpeechToTextProviderTests
     [Fact]
     public async Task TranscribeAsync_NullAudio_ReturnsNull_WithoutCallingApi()
     {
-        Environment.SetEnvironmentVariable("Groq__ApiKey", ApiKey);
+        Environment.SetEnvironmentVariable("OpenAI__ApiKey", ApiKey);
         var handler = new FakeHttpHandler(HttpStatusCode.OK, """{"text":"x"}""");
         var provider = CreateProvider(handler);
 
@@ -75,7 +75,7 @@ public class GroqSpeechToTextProviderTests
     {
         // Graph devuelve el MIME con parámetros ("audio/ogg; codecs=opus"); antes esto
         // rompía en MediaTypeHeaderValue (FormatException). Debe tolerarlo.
-        Environment.SetEnvironmentVariable("Groq__ApiKey", ApiKey);
+        Environment.SetEnvironmentVariable("OpenAI__ApiKey", ApiKey);
         var handler = new FakeHttpHandler(HttpStatusCode.OK, """{"text":"Quiero una cita el lunes"}""");
         var provider = CreateProvider(handler);
 
@@ -88,7 +88,18 @@ public class GroqSpeechToTextProviderTests
     [Fact]
     public async Task TranscribeAsync_NoApiKey_Throws()
     {
-        Environment.SetEnvironmentVariable("Groq__ApiKey", null);
+        Environment.SetEnvironmentVariable("OpenAI__ApiKey", null);
+        var provider = CreateProvider(new FakeHttpHandler(HttpStatusCode.OK, """{"text":"x"}"""));
+
+        var act = async () => await provider.TranscribeAsync(new byte[] { 1 }, "audio/ogg");
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task TranscribeAsync_PlaceholderApiKey_Throws()
+    {
+        Environment.SetEnvironmentVariable("OpenAI__ApiKey", "sk-xxx-placeholder");
         var provider = CreateProvider(new FakeHttpHandler(HttpStatusCode.OK, """{"text":"x"}"""));
 
         var act = async () => await provider.TranscribeAsync(new byte[] { 1 }, "audio/ogg");

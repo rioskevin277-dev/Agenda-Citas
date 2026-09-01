@@ -59,16 +59,12 @@ public class ChatOrchestratorService
         var deliveryToken = CancellationToken.None;
 
         // Cadena de proveedores: se prueba en orden hasta que uno responde.
-        // OpenRouter (modelos :free) PRIMERO: es más resiliente que Groq, cuya cuota gratuita
-        // diaria rate-limitea con 429 y hacía caer turnos al genérico "Lo siento, tuve un
-        // problema" (contesta a unos y a otros no, según el momento en que se agota el cupo).
-        // Groq queda como respaldo gratis; luego OpenAI y Anthropic como fallback de pago.
+        // OpenAI PRIMERO: key verificada y valida, es el canal principal.
+        // OpenRouter + Groq (keys actuales rotas/placeholder) y Anthropic (fallback de pago)
+        // completan la cadena como respaldo.
         var aiProviders = new (string Name, IAiProvider Provider, List<object> Tools)[]
         {
-            // OpenAI out of the chain: its global key is rejected/broken, and a provider that
-            // hangs on auth burns the ~30s turn budget across the 2 retry passes (new clients
-            // hit the generic "Lo siento, tuve un problema"). OpenRouter + Groq (free) plus
-            // Anthropic (paid) cover the fallback without the broken lane.
+            ("OpenAI", services.GetRequiredService<OpenAIProvider>(), AppointmentToolDefinitions.GetOpenAiToolDefinitions()),
             ("OpenRouter", services.GetRequiredService<OpenRouterProvider>(), AppointmentToolDefinitions.GetOpenAiToolDefinitions()),
             ("Groq", services.GetRequiredService<GroqProvider>(), AppointmentToolDefinitions.GetOpenAiToolDefinitions()),
             ("Anthropic", services.GetRequiredService<AnthropicProvider>(), AppointmentToolDefinitions.GetAnthropicToolDefinitions())

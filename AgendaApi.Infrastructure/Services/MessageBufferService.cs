@@ -198,7 +198,7 @@ public class MessageBufferService : BackgroundService
             var username = lastMsg.Username;
 
             // Transcripción de audios: si el cliente envió uno o más audios, se descargan,
-            // se transcriben (Groq Whisper) y el texto reemplaza el placeholder "[audio]"
+            // se transcriben (OpenAI Whisper) y el texto reemplaza el placeholder "[audio]"
             // para que el flujo los trate como mensajes escritos.
             var ordered = buffer.Messages.OrderBy(m => m.ReceivedAt).ToList();
             if (ordered.Any(IsAudio))

@@ -109,7 +109,7 @@ public class ChatOrchestratorServiceTests
 
         // Proveedores REALES (no mockeables: métodos no virtuales) con un handler que revienta
         // sin tocar la red: cada intento termina en excepción, igual que un proveedor caído.
-        foreach (var clientName in new[] { "groq-api", "openrouter-api", "anthropic-api" })
+        foreach (var clientName in new[] { "groq-api", "openrouter-api", "anthropic-api", "openai-api" })
         {
             services.AddHttpClient(clientName)
                 .ConfigurePrimaryHttpMessageHandler(() => new FailingHttpHandler(transportError));
@@ -117,6 +117,7 @@ public class ChatOrchestratorServiceTests
         services.AddScoped<GroqProvider>();
         services.AddScoped<OpenRouterProvider>();
         services.AddScoped<AnthropicProvider>();
+        services.AddScoped<OpenAIProvider>();
 
         services.AddSingleton<ConversationMemoryService>();
         services.AddSingleton<ConversationStateService>();
@@ -147,7 +148,8 @@ public class ChatOrchestratorServiceTests
                     && f.PhoneCliente == UserId
                     && f.Detalle.Contains("OpenRouter")
                     && f.Detalle.Contains("Groq")
-                    && f.Detalle.Contains("Anthropic")),
+                    && f.Detalle.Contains("Anthropic")
+                    && f.Detalle.Contains("OpenAI")),
                 It.IsAny<CancellationToken>()),
             Times.Once);
 

@@ -79,8 +79,10 @@ public static class DependencyInjection
             client.DefaultRequestHeaders.Add("User-Agent", "AgendaApi/1.0");
         });
         services.AddScoped<GroqProvider>();
-        // Speech-to-text (audios del cliente) con Groq Whisper — reutiliza el client "groq-api".
-        services.AddScoped<ISpeechToTextProvider, GroqSpeechToTextProvider>();
+        // Speech-to-text (audios del cliente) con OpenAI Whisper — reutiliza la key de OpenAI
+        // (ya validada por OpenAIProvider) y el client "openai-api". Evita depender de una key de
+        // Groq separada (placeholder) que rompía la transcripción con Unauthorized.
+        services.AddScoped<ISpeechToTextProvider, OpenAISpeechToTextProvider>();
 
         // Respaldo gratuito de Groq: OpenRouter (gateway OpenAI-compatible con modelos :free).
         services.AddHttpClient("openrouter-api", client =>
