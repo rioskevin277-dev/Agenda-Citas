@@ -57,3 +57,7 @@ publish_local/
 /3.png
 /4.png
 /5.png
+
+# Herramientas locales de skill registry (atlantis) + scripts locales con secretos
+.atl/
+/start-agenda.sh
