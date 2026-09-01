@@ -37,18 +37,19 @@ services:
         condition: service_healthy
     environment:
       - ConnectionStrings__AgendaDb=Server=sqlserver;Database=AgendaApi;User Id=sa;Password=${SQL_PASSWORD:-AgendaApi_Prod_ChangeMe!};TrustServerCertificate=True;MultipleActiveResultSets=true
-      - TokenEncryption__MasterKey=${MASTER_KEY}
+      - TokenEncryption__MasterKey=${TokenEncryption__MasterKey}
       - DASHBOARD_KEY=${DASHBOARD_KEY}
-      - Jwt__Secret=${JWT_SECRET}
-      - OpenAI__ApiKey=${OPENAI_API_KEY}
-      - Anthropic__ApiKey=${ANTHROPIC_API_KEY}
-      - WhatsApp__AccessToken=${WHATSAPP_ACCESS_TOKEN}
-      - WhatsApp__PhoneNumberId=${WHATSAPP_PHONE_NUMBER_ID}
-      - WhatsApp__VerifyToken=${WHATSAPP_VERIFY_TOKEN}
-      - Groq__ApiKey=${GROQ_API_KEY}
-      - OpenRouter__ApiKey=${OPENROUTER_API_KEY}
-      - OpenRouter__Model=${OPENROUTER_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
-      - OpenRouter__MaxTokens=${OPENROUTER_MAX_TOKENS:-1200}
+      - Jwt__Secret=${Jwt__Secret}
+      - OpenAI__ApiKey=${OpenAI__ApiKey}
+      - Anthropic__ApiKey=${Anthropic__ApiKey}
+      - WhatsApp__AccessToken=${WhatsApp__AccessToken}
+      - WhatsApp__PhoneNumberId=${WhatsApp__PhoneNumberId}
+      - WhatsApp__VerifyToken=${WhatsApp__VerifyToken}
+      - Groq__ApiKey=${Groq__ApiKey}
+      - OpenRouter__ApiKey=${OpenRouter__ApiKey}
+      - OpenRouter__Model=${OpenRouter__Model:-nvidia/nemotron-3-super-120b-a12b:free}
+      - OpenRouter__MaxTokens=${OpenRouter__MaxTokens:-1200}
+      - TURNO_TIMEOUT_SEG=${TURNO_TIMEOUT_SEG:-30}
       - GoogleOAuth__ClientId=${GoogleOAuth__ClientId}
       - GoogleOAuth__ClientSecret=${GoogleOAuth__ClientSecret}
       - MicrosoftOAuth__ClientId=${MicrosoftOAuth__ClientId}
