@@ -12,6 +12,7 @@ public class RenewCalendarSubscriptionsUseCaseTests
     private readonly Mock<ICalendarConnectionRepository> _connectionRepo = new();
     private readonly Mock<ICalendarProviderFactory> _providerFactory = new();
     private readonly Mock<ICalendarProvider> _calendarProvider = new();
+    private readonly Mock<IUnitOfWork> _unitOfWork = new();
     private readonly RenewCalendarSubscriptionsUseCase _useCase;
 
     public RenewCalendarSubscriptionsUseCaseTests()
@@ -19,7 +20,8 @@ public class RenewCalendarSubscriptionsUseCaseTests
         _useCase = new RenewCalendarSubscriptionsUseCase(
             _connectionRepo.Object,
             _providerFactory.Object,
-            new Mock<ILogger<RenewCalendarSubscriptionsUseCase>>().Object);
+            new Mock<ILogger<RenewCalendarSubscriptionsUseCase>>().Object,
+            _unitOfWork.Object);
     }
 
     private static CalendarConnection ActiveConnection(Guid tenantId) => new()
@@ -39,6 +41,7 @@ public class RenewCalendarSubscriptionsUseCaseTests
             .ReturnsAsync(_calendarProvider.Object);
         _calendarProvider.Setup(p => p.SubscribeToChangesAsync(tenantId, It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(("channel_1", "resource_1", DateTime.UtcNow.AddDays(3)));
+        _unitOfWork.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
 
         var result = await _useCase.EnsureSubscriptionAsync(tenantId, "https://api.example.com");
 
@@ -47,6 +50,7 @@ public class RenewCalendarSubscriptionsUseCaseTests
             tenantId, It.Is<string>(u => u.StartsWith("https://api.example.com")), It.IsAny<CancellationToken>()), Times.Once);
         // Sin SyncToken, se hace un delta inicial (bootstrap) para seedear el token.
         _calendarProvider.Verify(p => p.GetChangesAsync(tenantId, string.Empty, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -81,11 +85,13 @@ public class RenewCalendarSubscriptionsUseCaseTests
             .ReturnsAsync(connection);
         _providerFactory.Setup(f => f.GetProviderAsync(tenantId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(_calendarProvider.Object);
+        _unitOfWork.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
 
         var result = await _useCase.EnsureSubscriptionAsync(tenantId, "https://api.example.com");
 
         result.Should().Be(1);
         _calendarProvider.Verify(p => p.SubscribeToChangesAsync(tenantId, It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -129,12 +135,16 @@ public class RenewCalendarSubscriptionsUseCaseTests
             .ReturnsAsync(_calendarProvider.Object);
         _providerFactory.Setup(f => f.GetProviderAsync(tenantOk, It.IsAny<CancellationToken>()))
             .ReturnsAsync(_calendarProvider.Object);
+        _unitOfWork.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
 
         var result = await _useCase.RenewAllAsync("https://api.example.com");
 
         result.Should().Be(1);
         _calendarProvider.Verify(p => p.SubscribeToChangesAsync(tenantNew, It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
         _calendarProvider.Verify(p => p.SubscribeToChangesAsync(tenantOk, It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        // Ambos tenants resuelven provider -> EnsureSubscriptionForConnectionAsync se ejecuta 2 veces,
+        // persistiendo en cada una (aunque el segundo no modifique nada).
+        _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Exactly(2));
     }
 
     [Fact]
@@ -151,10 +161,13 @@ public class RenewCalendarSubscriptionsUseCaseTests
             .ReturnsAsync(_calendarProvider.Object);
         _providerFactory.Setup(f => f.GetProviderAsync(tenantNoProvider, It.IsAny<CancellationToken>()))
             .ReturnsAsync((ICalendarProvider?)null);
+        _unitOfWork.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
 
         var result = await _useCase.RenewAllAsync("https://api.example.com");
 
         result.Should().Be(1);
         _calendarProvider.Verify(p => p.SubscribeToChangesAsync(tenantNew, It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+        // Solo tenantNew resuelve provider -> una sola persistencia.
+        _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 }

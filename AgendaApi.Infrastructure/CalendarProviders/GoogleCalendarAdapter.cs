@@ -243,7 +243,7 @@ var url = $"{CalendarApiBase}/calendars/{Uri.EscapeDataString(calendarId)}/event
         }
 
         var watchData = JsonSerializer.Deserialize<GoogleWatchResponse>(json);
-        var expiresAt = DateTimeOffset.FromUnixTimeMilliseconds(watchData?.Expiration ?? 0).UtcDateTime;
+        var expiresAt = ParseWatchExpiration(watchData?.Expiration);
 
         // Almacenar channelId y resourceId en la conexión
         var connection = await _connectionRepo.GetByTenantIdAsync(tenantId, ct);
@@ -257,7 +257,7 @@ var url = $"{CalendarApiBase}/calendars/{Uri.EscapeDataString(calendarId)}/event
         }
 
         _logger.LogInformation("[GoogleCalendar] Watch creado: channel={ChannelId}, resource={ResourceId}, exp={Expires}", channelId, watchData?.ResourceId, expiresAt);
-        return (channelId, watchData?.ResourceId, expiresAt);
+        return (channelId, watchData?.ResourceId, expiresAt ?? default);
     }
 
     public async Task<string> RefreshAccessTokenAsync(Guid tenantId, string refreshToken, CancellationToken ct = default)
@@ -357,6 +357,27 @@ var url = $"{CalendarApiBase}/calendars/{Uri.EscapeDataString(calendarId)}/event
         return request;
     }
 
+    /// <summary>
+    /// Parsea el campo `expiration` del channel de Google (milisegundos epoch).
+    /// Google lo devuelve como STRING en algunos SDK/formatos y como número en otros,
+    /// por eso se aceptan ambos. Ante un valor inválido devuelve null (no lanza)
+    /// para no romper el flujo best-effort del watch; RenewCalendarSubscriptionsUseCase
+    /// ya trata SyncChannelExpiresAt == null como "hay que renovar".
+    /// </summary>
+    private static DateTime? ParseWatchExpiration(string? expiration)
+    {
+        // El valor viene como milisegundos epoch (ej. "1780000000000").
+        if (!string.IsNullOrWhiteSpace(expiration)
+            && long.TryParse(expiration.Trim(), System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out var ms)
+            && ms > 0)
+        {
+            return DateTimeOffset.FromUnixTimeMilliseconds(ms).UtcDateTime;
+        }
+
+        return null;
+    }
+
     // ─── DTOs ───────────────────────────────────────────────────
 
     private class GoogleEventsResponse
@@ -390,6 +411,9 @@ var url = $"{CalendarApiBase}/calendars/{Uri.EscapeDataString(calendarId)}/event
     {
         [JsonPropertyName("id")] public string? Id { get; set; }
         [JsonPropertyName("resourceId")] public string ResourceId { get; set; } = string.Empty;
-        [JsonPropertyName("expiration")] public long Expiration { get; set; }
+        // Google devuelve `expiration` como STRING (milisegundos epoch) para evitar
+        // pérdida de precisión en clientes. Declararlo string permite deserializar
+        // ambos casos (número o string). Se parsea en el consumidor.
+        [JsonPropertyName("expiration")] public string? Expiration { get; set; }
     }
 }

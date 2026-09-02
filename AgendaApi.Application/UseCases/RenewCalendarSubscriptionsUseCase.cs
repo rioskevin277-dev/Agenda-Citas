@@ -19,15 +19,18 @@ public class RenewCalendarSubscriptionsUseCase
     private readonly ICalendarConnectionRepository _connectionRepo;
     private readonly ICalendarProviderFactory _providerFactory;
     private readonly ILogger<RenewCalendarSubscriptionsUseCase> _logger;
+    private readonly IUnitOfWork _unitOfWork;
 
     public RenewCalendarSubscriptionsUseCase(
         ICalendarConnectionRepository connectionRepo,
         ICalendarProviderFactory providerFactory,
-        ILogger<RenewCalendarSubscriptionsUseCase> logger)
+        ILogger<RenewCalendarSubscriptionsUseCase> logger,
+        IUnitOfWork unitOfWork)
     {
         _connectionRepo = connectionRepo;
         _providerFactory = providerFactory;
         _logger = logger;
+        _unitOfWork = unitOfWork;
     }
 
     /// <summary>
@@ -118,6 +121,10 @@ public class RenewCalendarSubscriptionsUseCase
                 _logger.LogWarning(ex, "[RenewSubs] No se pudo seedear SyncToken del tenant {TenantId}", tenantId);
             }
         }
+
+        // Persistir los cambios del canal (SyncChannelId, SyncResourceId, SyncChannelExpiresAt)
+        // y del SyncToken seedeado, mutados en memoria por el provider vía UpdateAsync.
+        await _unitOfWork.SaveChangesAsync(ct);
 
         return needsSubscription;
     }
