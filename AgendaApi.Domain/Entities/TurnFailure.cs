@@ -24,7 +24,16 @@ public class TurnFailure
     [StringLength(200)]
     public string PhoneCliente { get; set; } = string.Empty;
 
-    /// <summary>Clasificación corta del fallo: "timeout" | "all_providers_failed".</summary>
+    /// <summary>
+    /// Clasificación corta del fallo: "timeout" | "all_providers_failed" | "stale_availability".
+    /// </summary>
+    /// <remarks>
+    /// - <c>timeout</c>: el turno venció antes de obtener respuesta de la IA.
+    /// - <c>all_providers_failed</c>: toda la cadena de proveedores de IA falló.
+    /// - <c>stale_availability</c>: el cupo prometido se liberó y fue re-ocupado (o quedó
+    ///   indisponible) entre el re-check de disponibilidad y la materialización de la cita;
+    ///   el cliente derivó a lista de espera.
+    /// </remarks>
     [Column("motivo")]
     [StringLength(50)]
     public string Motivo { get; set; } = string.Empty;

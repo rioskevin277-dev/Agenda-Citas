@@ -4,6 +4,7 @@ using AgendaApi.Application.Support;
 using AgendaApi.Application.Tools;
 using AgendaApi.Domain.Ports;
 using AgendaApi.Infrastructure.AiProviders;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -15,6 +16,7 @@ public class ChatOrchestratorService
     private readonly ConversationMemoryService _conversationMemory;
     private readonly ConversationStateService _conversationState;
     private readonly ILogger<ChatOrchestratorService> _logger;
+    private readonly bool _freshnessCheckEnabled;
 
     private const int MaxToolIterations = 7;
     private const int MaxReasoningRetries = 2;
@@ -23,12 +25,18 @@ public class ChatOrchestratorService
         IServiceScopeFactory scopeFactory,
         ConversationMemoryService conversationMemory,
         ConversationStateService conversationState,
+        IConfiguration configuration,
         ILogger<ChatOrchestratorService> logger)
     {
         _scopeFactory = scopeFactory;
         _conversationMemory = conversationMemory;
         _conversationState = conversationState;
         _logger = logger;
+
+        // Feature flag de frescura de cupos (rollback, RF espejo): al desactivarlo, el
+        // re-check determinístico se salta por completo. Por defecto activo.
+        _freshnessCheckEnabled = !bool.TryParse(configuration["Availability:FreshnessCheck"], out var v)
+            || v;
     }
 
     public async Task ProcessMessageAsync(
@@ -166,6 +174,28 @@ public class ChatOrchestratorService
         _conversationMemory.AddUser(conversationKey, messageContent);
         await PersistMessageAsync(conversationHistory, unitOfWork, tenantId, userId, "user", messageContent, ct);
 
+        // RF1/RF3: re-check determinístico de disponibilidad al inicio del turno. Ejecuta
+        // check_availability POR CÓDIGO (no por decisión del LLM) cuando hay reserva en curso,
+        // pedido explícito de fecha/hora o el tenant quedó marcado sucio por un webhook de
+        // cancelación externa (RF3). El hecho de frescura se inyecta al modelo como mensaje de
+        // contexto (NO es un tool-call visible al cliente) para que no prometa cupos obsoletos.
+        // "availabilityConfirmed" registra si el re-check halló cupos: sirve para clasificar un
+        // fallo de agendamiento posterior como stale_availability (RF2/RF4) — el cupo prometido
+        // se liberó y fue re-ocupado entre este turno y la materialización de la cita.
+        bool availabilityReCheckConfirmed = false;
+        var freshnessFact = await BuildAvailabilityFreshnessContextAsync(
+            services,
+            pendingBooking,
+            messageContent,
+            _conversationState.ConsumeTenantDirty(tenantId),
+            tenantId,
+            ct);
+        if (freshnessFact != null)
+        {
+            messages.Add(new ChatMessage { Role = "system", Content = freshnessFact.Value.Context });
+            availabilityReCheckConfirmed = freshnessFact.Value.HasSlots;
+        }
+
         // Acciones del AI en este turno en texto legible (se anotan por tool ejecutada).
         var accionesPrevias = new List<string>();
 
@@ -295,7 +325,7 @@ public class ChatOrchestratorService
                 if (toolCall.Name == "check_availability") sawAvailabilityProbe = true;
                 if (toolCall.Name == "create_appointment") sawCreateAppointment = true;
 
-                var toolResult = await ExecuteToolAsync(toolCall.Name, toolCall.Arguments, services, tenantId, userId, clientName, accionesPrevias, ct);
+                var toolResult = await ExecuteToolAsync(toolCall.Name, toolCall.Arguments, services, tenantId, userId, clientName, accionesPrevias, availabilityReCheckConfirmed, ct);
                 accionesPrevias.Add(ToolActionSummarizer.Summarize(toolCall.Name, toolResult));
 
                 // Rastrear el agendamiento en curso (P3): lo que el cliente dejó a medio armar.
@@ -582,6 +612,7 @@ public class ChatOrchestratorService
         string userPhone,
         string? clientName,
         IReadOnlyList<string> accionesPrevias,
+        bool availabilityConfirmed,
         CancellationToken ct)
     {
         try
@@ -592,7 +623,7 @@ public class ChatOrchestratorService
             return toolName switch
             {
                 "check_availability" => await CheckAvailabilityAsync(args, services, tenantId, ct),
-                "create_appointment" => await CreateAppointmentAsync(args, services, tenantId, userPhone, clientName, ct),
+                "create_appointment" => await CreateAppointmentAsync(args, services, tenantId, userPhone, clientName, availabilityConfirmed, ct),
                 "cancel_appointment" => await CancelAppointmentAsync(args, services, tenantId, ct),
                 "cancel_all_appointments" => await CancelAllAppointmentsAsync(services, tenantId, userPhone, ct),
                 "confirm_appointment" => await ConfirmAppointmentAsync(args, services, tenantId, ct),
@@ -690,7 +721,7 @@ REGLAS IMPORTANTES:
 8.5 RESPONDIENDO AL RECORDATORIO: si el cliente responde CONFIRMAR, usa confirm_appointment (identifica la cita con su WhatsApp y confirma la proxima). Si dice REAGENDAR (o ""cambiar fecha""), preguntale la nueva fecha/hora, usa check_availability y luego reschedule_appointment. Si dice CANCELAR, usa cancel_appointment. Tras CONFIRMAR o CANCELAR termina el turno. Tras REAGENDAR confirma la nueva fecha; y si la cita estaba confirmada, el sistema la deja nuevamente PENDIENTE, asi que pidele al cliente responder CONFIRMAR para re-confirmarla.
 8.6 CONFIRMACION DE CITA: CREA LA CITA ANTES DE PEDIR LA CONFIRMACION DEFINITIVA. Una vez que el cliente acuerde servicio, fecha y horario, llama ANTES create_appointment para materializar la reserva (queda PENDIENTE en la base). NADA de preguntar ''¿confirmas?'' si todavia no creaste la cita: la creacion SIEMPRE precede a la pregunta. Luego informale que quedo reservada como provisional y pedile que responda CONFIRMAR para confirmarla definitivamente. Cuando el cliente responda 'si', 'confirmo', 'confirmar' o acepte, confirma la cita (o el sistema la confirma de forma automatica al responder CONFIRMAR). Tras confirmar, termina el turno y no repitas la pregunta.
 8.8 LISTA DE ESPERA: si el cliente quiere un servicio pero NO hay disponibilidad (check_availability no devuelve cupos, o la fecha/hora que quiere esta ocupada o fuera del rango permitido), ofrecele agregarse a la lista de espera con add_to_waitlist (usa el nombre exacto del servicio que pidio). Si acepta, confirma el servicio y, si quiere, el rango de fechas (fecha_desde/fecha_hasta) y el profesional preferido (professional_name) — todos opcionales. Informale que se le avisara por WhatsApp cuando se libere un cupo y termina el turno. Si dice que solo queria probar fechas, no lo agregues.
-8.8a CUANDO NO HAY CUPOS, NO SONDEES EN LOOP: si check_availability devuelve 0 cupos para lo que pidio el cliente, NO vuelvas a llamar check_availability con otras fechas u otros servicios en busca de un hueco. Eso apaga el turno. En su lugar, con esa primera respuesta ya informale al cliente que no hay disponibilidad para lo pedido, pregunta si quiere otra FECha/horario o la LISTA DE ESPERA (regla 8.8), y termina el turno. Usa maximo UNA llamada de check_availability salvo que el cliente cambie explicitamente la fecha o el servicio que quiere.
+8.8a CUANDO NO HAY CUPOS, NO SONDEES EN LOOP: si check_availability devuelve 0 cupos para lo que pidio el cliente, puedes hacer COMO MAXIMO UNA sola re-consulta con otra fecha/servicio para confirmar, pero NO en loop. Si la re-consulta tampoco da cupos (o el sistema ya te dio el CONTEXTO DE DISPONIBILIDAD ACTUAL de este turno), informale al cliente que no hay disponibilidad para lo pedido, pregunta si quiere otra fecha/horario o la LISTA DE ESPERA (regla 8.8), y termina el turno. Nunca sondees tres o mas veces en el mismo turno salvo que el cliente cambie explicitamente la fecha o el servicio que quiere.
 
 CLIENTE ACTUAL:
 " + senderIdentity + @"
@@ -725,6 +756,104 @@ HERRAMIENTAS DISPONIBLES:
         if (s.DuracionMinutos > 0) detalle.Add($"{s.DuracionMinutos} min");
         if (s.Precio.HasValue) detalle.Add($"${s.Precio.Value.ToString("N0", cult)}");
         return detalle.Count > 0 ? $"- {s.Nombre} ({string.Join(", ", detalle)})" : $"- {s.Nombre}";
+    }
+
+    /// <summary>
+    /// Re-check determinístico de disponibilidad al turn-start (RF1): decide si hace falta
+    /// (hay reserva en curso, el cliente pide fecha/hora, o el tenant quedó marcado sucio por un
+    /// webhook externo — RF3) y, de ser así, ejecuta check_availability POR CÓDIGO devolviendo el
+    /// "hecho de frescura" a inyectar al modelo como contexto (nunca como tool-call visible).
+    /// Devuelve null si no procede el re-check (feature apagada o sin disparador). El flag de
+    /// suciedad ya fue consumido (one-shot) por quien llamó; acá solo se recibe como bool.
+    /// </summary>
+    internal async Task<(string Context, bool HasSlots)?> BuildAvailabilityFreshnessContextAsync(
+        IServiceProvider services,
+        PendingBooking? pendingBooking,
+        string messageContent,
+        bool tenantDirty,
+        Guid tenantId,
+        CancellationToken ct)
+    {
+        if (!_freshnessCheckEnabled)
+            return null;
+
+        var wantsBooking = pendingBooking != null || LooksLikeBookingIntent(messageContent);
+        if (!wantsBooking && !tenantDirty)
+            return null;
+
+        Application.UseCases.CheckAvailabilityUseCase checkAvailability;
+        try
+        {
+            checkAvailability = services.GetRequiredService<Application.UseCases.CheckAvailabilityUseCase>();
+        }
+        catch (Exception ex)
+        {
+            // El re-check es una mejora, nunca un punto de ruptura: si no se puede resolver el
+            // caso de uso, se degrada a sin-recheck (seguridad de comportamiento).
+            _logger.LogDebug(ex, "[Orchestrator] No se pudo resolver CheckAvailabilityUseCase para el re-check; se omite");
+            return null;
+        }
+
+        // Rango a re-verificar: la fecha anclada de la reserva en curso si existe; si no, una
+        // ventana alrededor de hoy (el cliente puede estar pidiendo fechas próximas).
+        var anchor = pendingBooking?.Fecha ?? DateOnly.FromDateTime(DateTime.Now);
+        var desde = anchor;
+        var hasta = pendingBooking?.Fecha is { } f && f >= desde ? f : anchor.AddDays(6);
+
+        var dto = new Application.DTOs.AvailabilityQueryDto
+        {
+            TenantId = tenantId,
+            FechaInicio = desde,
+            FechaFin = hasta,
+            ServiceTypeName = pendingBooking?.ServiceTypeName,
+            ProfessionalName = pendingBooking?.ProfessionalName
+        };
+
+        List<Application.DTOs.TimeSlotDto> slots;
+        try
+        {
+            slots = await checkAvailability.ExecuteAsync(dto, ct);
+        }
+        catch (Exception ex)
+        {
+            // Igual que en CheckAvailabilityAsync: un calendario externo caído no debe romper el
+            // turno; el re-check se omite y el flujo sigue con la disponibilidad que el LLM vea.
+            _logger.LogDebug(ex, "[Orchestrator] Re-check de disponibilidad omitido por error");
+            return null;
+        }
+
+        var hasSlots = slots.Count > 0;
+        string context = hasSlots
+            ? "CONTEXTO DE DISPONIBILIDAD ACTUAL (verificado por el sistema justo ahora, dato "
+              + "confiable; NO vuelvas a llamar check_availability en este turno salvo que el "
+              + "cliente cambie fecha, servicio o profesional): hay cupos disponibles. Agenda "
+              + "usando estos horarios exactos y NO prometas horarios que no estén listados."
+            : "CONTEXTO DE DISPONIBILIDAD ACTUAL (verificado por el sistema justo ahora, dato "
+              + "confiable; NO vuelvas a llamar check_availability en este turno salvo que el "
+              + "cliente cambie fecha, servicio o profesional): NO hay cupos disponibles para lo "
+              + "solicitado. Informa al cliente y ofrécele otro horario o la lista de espera "
+              + "(regla 8.8).";
+
+        return (context, hasSlots);
+    }
+
+    /// <summary>
+    /// Heurística conservadora: ¿el mensaje pide agendar / consultar disponibilidad / menciona una
+    /// fecha u horario? Dispara el re-check determinístico (RF1) cuando aún no hay reserva en
+    /// curso registrada. No debe dar falsos positivos en saludos ni mensajes banales ("hola").
+    /// </summary>
+    private static bool LooksLikeBookingIntent(string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return false;
+        var c = content.ToLowerInvariant();
+        return c.Contains("cita") || c.Contains("turno") || c.Contains("reserv")
+            || c.Contains("agend") || c.Contains("horario") || c.Contains("disponib")
+            || c.Contains("fecha") || c.Contains("hora") || c.Contains("hoy")
+            || c.Contains("manana") || c.Contains("mañana") || c.Contains("lunes")
+            || c.Contains("martes") || c.Contains("miercoles") || c.Contains("miércoles")
+            || c.Contains("jueves") || c.Contains("viernes") || c.Contains("sabado")
+            || c.Contains("sábado") || c.Contains("domingo") || c.Contains("sacame")
+            || c.Contains("dame turno") || c.Contains("quiero sacar");
     }
 
     // Tool Handlers
@@ -774,12 +903,13 @@ HERRAMIENTAS DISPONIBLES:
         return JsonSerializer.Serialize(result);
     }
 
-    private async Task<string> CreateAppointmentAsync(
+    internal async Task<string> CreateAppointmentAsync(
         JsonElement args,
         IServiceProvider services,
         Guid tenantId,
         string userPhone,
         string? clientName,
+        bool availabilityConfirmed,
         CancellationToken ct)
     {
         var useCase = services.GetRequiredService<Application.UseCases.CreateAppointmentUseCase>();
@@ -803,7 +933,27 @@ HERRAMIENTAS DISPONIBLES:
             Notas = args.TryGetProperty("notas", out var notas) ? notas.GetString() : null
         };
 
-        var response = await useCase.ExecuteAsync(dto, ct);
+        // RF2/RF4: el cupo que se prometió (y re-verificó por código al turn-start, RF1) puede
+        // liberarse y ser re-ocupado entre ese re-check y esta materialización. Cuando la reserva
+        // falla por validación Y el turno había confirmado disponibilidad, es un cupo obsoleto
+        // (stale_availability): se registra en turn_failures y se deriva al cliente a lista de
+        // espera, sin pagar el costo de que el LLM sondee de nuevo.
+        Application.DTOs.AppointmentResponseDto? response;
+        try
+        {
+            response = await useCase.ExecuteAsync(dto, ct);
+        }
+        catch (InvalidOperationException ex) when (availabilityConfirmed)
+        {
+            var detalle = $"prometido={dto.FechaInicio:yyyy-MM-ddTHH:mm:ss}"
+                + $" servicio={dto.ServiceTypeName} profesional={dto.ProfessionalName ?? "-"}"
+                + $"; actual=no_disponible: {ex.Message}";
+            await PersistTurnFailureAsync(services, tenantId, userPhone, "stale_availability", detalle);
+
+            const string staleText = "El horario que elegiste ya no está disponible (se ocupó mientras lo confirmábamos). " +
+                "¿Quieres que revise otro horario o que te agregue a la lista de espera?";
+            return JsonSerializer.Serialize(new { success = false, stale = true, error = staleText });
+        }
 
         if (response == null)
         {

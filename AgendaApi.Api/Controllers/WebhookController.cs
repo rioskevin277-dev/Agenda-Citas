@@ -19,6 +19,7 @@ public class WebhookController : ControllerBase
     private readonly ITenantRepository _tenantRepo;
     private readonly ITenantContext _tenantContext;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ConversationStateService _conversationState;
     private readonly ILogger<WebhookController> _logger;
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _syncLocks = new();
 
@@ -28,6 +29,7 @@ public class WebhookController : ControllerBase
         ITenantRepository tenantRepo,
         ITenantContext tenantContext,
         IServiceScopeFactory scopeFactory,
+        ConversationStateService conversationState,
         ILogger<WebhookController> logger)
     {
         _messagingProvider = messagingProvider;
@@ -35,6 +37,7 @@ public class WebhookController : ControllerBase
         _tenantRepo = tenantRepo;
         _tenantContext = tenantContext;
         _scopeFactory = scopeFactory;
+        _conversationState = conversationState;
         _logger = logger;
     }
 
@@ -363,6 +366,10 @@ public class WebhookController : ControllerBase
                 using var scope = _scopeFactory.CreateScope();
                 var useCase = scope.ServiceProvider.GetRequiredService<SyncExternalChangesUseCase>();
                 var count = await useCase.ExecuteAsync(tenantId);
+                // RF3: marcar tenant como sucio después de la sync de cambios externos para que el
+                // orquestador fuerce un re-check de disponibilidad en el próximo turno (incluso si
+                // no hay PendingBooking ni pedido de fecha/hora explícito).
+                _conversationState.MarkTenantDirty(tenantId);
                 _logger.LogInformation("[Webhook] Sync completado para {TenantId}: {Count} cambios", tenantId, count);
             }
             catch (Exception ex)
