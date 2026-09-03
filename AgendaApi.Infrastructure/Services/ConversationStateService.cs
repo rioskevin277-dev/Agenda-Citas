@@ -14,10 +14,31 @@ public class ConversationStateService
     private readonly ILogger<ConversationStateService> _logger;
     private static readonly TimeSpan Expiry = TimeSpan.FromHours(24);
 
+    // Dirty flag por-tenant (RF3): el webhook de cancelación externa lo marca para que el
+    // orquestador fuerce un re-check de disponibilidad en el siguiente turno, aun sin
+    // PendingBooking ni pedido de fecha/hora. Volátil: se pierde en restart, pero el re-check
+    // determinístico (RF1) protege la corrección (solo se pierde agresividad). One-shot por
+    // consumo. Key = tenantId (el webhook fire-and-forget solo conoce tenantId, no el phone).
+    private readonly ConcurrentDictionary<Guid, DateTime> _tenantDirty = new();
+
     public ConversationStateService(ILogger<ConversationStateService> logger)
     {
         _logger = logger;
     }
+
+    /// <summary>
+    /// Marca al tenant como "sucio" para forzar un re-check de disponibilidad en su próximo turno.
+    /// Idempotente: marcar varias veces mantiene el flag hasta que se consume una vez.
+    /// </summary>
+    public void MarkTenantDirty(Guid tenantId)
+        => _tenantDirty[tenantId] = DateTime.UtcNow;
+
+    /// <summary>
+    /// Consume (one-shot) el flag de suciedad del tenant. Devuelve true y limpia el flag si estaba
+    /// marcado; false si nunca se marcó o ya se consumió.
+    /// </summary>
+    public bool ConsumeTenantDirty(Guid tenantId)
+        => _tenantDirty.TryRemove(tenantId, out _);
 
     public static string GetKey(Guid tenantId, string userPhone)
         => ConversationMemoryService.GetKey(tenantId, userPhone);
