@@ -6,12 +6,11 @@
     Automatiza TODO el ciclo de producción para que no tengas que hacer nada a mano:
 
       1. Verifica que .env exista y tenga las claves críticas.
-      2. Publica el binario (dotnet publish -> publish_local).  [el paso que suele olvidarse]
-      3. Asegura que Docker Desktop esté corriendo.
-      4. Reconstruye y levanta los contenedores (docker compose up -d --build).
-      5. Espera a que la API responda en local.
-      6. Asegura que el túnel de Cloudflare esté activo.
-      7. Verifica el health REAL del dominio público y reporta el estado.
+      2. Asegura que el engine de Docker esté corriendo.
+      3. Reconstruye y levanta los contenedores (docker compose up -d --build).
+      4. Espera a que la API responda en local.
+      5. Asegura que el túnel de Cloudflare esté activo.
+      6. Verifica el health REAL del dominio público y reporta el estado.
 
     Uso:
         .\scripts\deploy-production.ps1
@@ -47,7 +46,7 @@ Write-Host "   🚀 AgendaApi - DESPLIEGUE DE PRODUCCIÓN" -ForegroundColor Cyan
 Write-Host "═══════════════════════════════════════════" -ForegroundColor Cyan
 
 # ─── 1. Validar .env y claves críticas ─────────────────────────────
-Write-Step "1/7 Verificando configuración (.env)..."
+Write-Step "1/6 Verificando configuración (.env)..."
 if (-not (Test-Path $envFile)) {
     Write-Err "No se encuentra .env en $ProjectRoot"
     Write-Err "Copia desde: copy .env.example .env"
@@ -64,15 +63,18 @@ Get-Content $envFile | ForEach-Object {
     }
 }
 
-# docker-compose.yml lee estas en ALL_CAPS. Validar presencia (no valor).
+# docker-compose.yml lee estos nombres (schema ASP.NET Section__Key). Validar presencia (no valor).
 $required = @(
     'SQL_PASSWORD',
-    'JWT_SECRET',
-    'MASTER_KEY',
-    'GROQ_API_KEY',
-    'WHATSAPP_ACCESS_TOKEN',
-    'WHATSAPP_PHONE_NUMBER_ID',
-    'WHATSAPP_VERIFY_TOKEN',
+    'TokenEncryption__MasterKey',
+    'DASHBOARD_KEY',
+    'Jwt__Secret',
+    'OpenAI__ApiKey',
+    'WhatsApp__AccessToken',
+    'WhatsApp__PhoneNumberId',
+    'WhatsApp__VerifyToken',
+    'Groq__ApiKey',
+    'OpenRouter__ApiKey',
     'PUBLIC_BASE_URL'
 )
 $missing = $required | Where-Object { -not [System.Environment]::GetEnvironmentVariable($_) }
@@ -83,7 +85,7 @@ if ($missing) {
 }
 $placeholders = @('sk-xxx','ChangeMe')
 $suspects = @()
-foreach ($k in @('GROQ_API_KEY','JWT_SECRET','MASTER_KEY','WHATSAPP_ACCESS_TOKEN')) {
+foreach ($k in @('OpenAI__ApiKey','Groq__ApiKey','Jwt__Secret','TokenEncryption__MasterKey','WhatsApp__AccessToken','OpenRouter__ApiKey')) {
     $val = [System.Environment]::GetEnvironmentVariable($k)
     foreach ($p in $placeholders) {
         if ($val -like "*$p*") { $suspects += $k; break }
@@ -94,22 +96,15 @@ if ($suspects) {
 }
 Write-Ok "Configuración presente"
 
-# ─── 2. Publicar binario ──────────────────────────────────────────
-Write-Step "2/7 Publicando binario (dotnet publish -> publish_local)..."
-dotnet publish "$ProjectRoot\AgendaApi.Api\AgendaApi.Api.csproj" -c Release -o "$ProjectRoot\publish_local"
-if ($LASTEXITCODE -ne 0) {
-    Write-Err "Falló dotnet publish"
-    exit 1
-}
-Write-Ok "Binario publicado (el contenedor copiará el código NUEVO)"
-
-# ─── 3. Asegurar Docker Desktop ───────────────────────────────────
-Write-Step "3/7 Asegurando Docker Desktop..."
+# ─── 2. Asegurar el engine de Docker ──────────────────────────────
+# (el Dockerfile compila desde el código dentro del contenedor; no hace falta publicar localmente)
+Write-Step "2/6 Asegurando el engine de Docker..."
 $dockerProc = Get-Process "Docker Desktop" -ErrorAction SilentlyContinue
 if (-not $dockerProc) {
     $dockerExe = "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
     if (-not (Test-Path $dockerExe)) {
         $dockerExe = "$env:LOCALAPPDATA\Docker\Docker Desktop\Docker Desktop.exe"  # carpeta AppData (tu caso)
+        if (-not (Test-Path $dockerExe)) { $dockerExe = "$env:LOCALAPPDATA\Programs\DockerDesktop\Docker Desktop.exe" }
     }
     if (Test-Path $dockerExe) {
         Write-Warn "Docker Desktop no estaba corriendo, iniciándolo..."
@@ -136,7 +131,7 @@ if (-not $dockerOk) {
 Write-Ok "Docker listo"
 
 # ─── 4. Reconstruir y levantar contenedores ───────────────────────
-Write-Step "4/7 Reconstruyendo y levantando contenedores (docker compose up -d --build)..."
+Write-Step "3/6 Reconstruyendo y levantando contenedores (docker compose up -d --build)..."
 wsl -d $WslDistro bash -c "cd /mnt/c/Users/USUARIO/agenda-api && docker compose up -d --build 2>&1"
 if ($LASTEXITCODE -ne 0) {
     Write-Err "Falló docker compose up --build"
@@ -145,7 +140,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Ok "Contenedores levantados"
 
 # ─── 5. Esperar health local ──────────────────────────────────────
-Write-Step "5/7 Esperando a que la API responda en local..."
+Write-Step "4/6 Esperando a que la API responda en local..."
 $healthOk = $false
 for ($i = 1; $i -le 30; $i++) {
     $resp = try { Invoke-WebRequest -Uri "http://localhost:8080/health" -UseBasicParsing -TimeoutSec 3 } catch { $null }
@@ -161,7 +156,7 @@ if (-not $healthOk) {
 }
 
 # ─── 6. Asegurar Cloudflare Tunnel (ahora como contenedor) ────────
-Write-Step "6/7 Asegurando Cloudflare Tunnel (contenedor)..."
+Write-Step "5/6 Asegurando Cloudflare Tunnel (contenedor)..."
 # Detiene cualquier túnel WSL viejo (ya no se usa; el túnel es el contenedor)
 wsl -d $WslDistro bash -c "pkill -f cloudflared 2>/dev/null; true" 2>$null
 # Levanta el contenedor cloudflared y REINTENTA si crashea en el arranque en frío
@@ -187,7 +182,7 @@ if (-not $cfRunning) {
 }
 
 # ─── 7. Verificar dominio público ─────────────────────────────────
-Write-Step "7/7 Verificando el dominio público ($PublicUrl/health)..."
+Write-Step "6/6 Verificando el dominio público ($PublicUrl/health)..."
 $pubOk = $false
 for ($i = 1; $i -le 10; $i++) {
     $resp = try { Invoke-WebRequest -Uri "$PublicUrl/health" -UseBasicParsing -TimeoutSec 5 } catch { $null }
