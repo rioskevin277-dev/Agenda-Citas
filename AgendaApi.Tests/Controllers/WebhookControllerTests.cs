@@ -114,7 +114,13 @@ public class WebhookControllerTests
 
         await controller.CalendarNotification();
 
-        await Task.Delay(500);
-        state.ConsumeTenantDirty(tenantId).Should().BeFalse("resource-state 'sync' no debe disparar dirty");
+        // Espera POR ESTADO (no un sleep ciego de 500ms): la sync corre fire-and-forget, así que
+        // se observa una ventana acotada cubriendo su completado. Si en CUALQUIER punto el flag se
+        // marca, el assert falla de inmediato — sin falso-pass por carga extrema (follow-up SDD).
+        for (var i = 0; i < 50; i++)
+        {
+            state.ConsumeTenantDirty(tenantId).Should().BeFalse("resource-state 'sync' no debe disparar dirty");
+            await Task.Delay(100);
+        }
     }
 }
