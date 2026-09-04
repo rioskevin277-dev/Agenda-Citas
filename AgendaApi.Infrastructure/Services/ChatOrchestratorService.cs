@@ -20,6 +20,12 @@ public class ChatOrchestratorService
 
     private const int MaxToolIterations = 7;
     private const int MaxReasoningRetries = 2;
+    // Guard de código (DP3/RF5): máximo 1 re-consulta de disponibilidad POR TURNO iniciada por el
+    // LLM (regla 8.8a). El re-check determinístico de turn-start ya inyecta el CONTEXTO DE
+    // DISPONIBILIDAD ACTUAL, así que el modelo no debe sondeer check_availability más de una vez
+    // en el mismo turno. Sin este tope duro, un tier :free podía entrar en loop de sondeo hasta
+    // agotar MaxToolIterations.
+    private const int MaxAvailabilityReConsults = 1;
 
     public ChatOrchestratorService(
         IServiceScopeFactory scopeFactory,
@@ -208,6 +214,10 @@ public class ChatOrchestratorService
         // Regeneración acotada cuando el modelo responde con su razonamiento interno en vez de
         // un mensaje para el cliente (se fuerza un número limitado de reintentos, ver abajo).
         int reasoningGuard = 0;
+        // Contador del guard de código (DP3/RF5): cuántas veces el modelo consultó disponibilidad
+        // en ESTE turno vía check_availability ToolCall. Al superar MaxAvailabilityReConsults la
+        // re-consulta se bloquea con un mensaje de tool (no se ejecuta la búsqueda real).
+        int availabilityReChecks = 0;
 
         for (int iteration = 0; iteration < MaxToolIterations; iteration++)
         {
@@ -322,7 +332,31 @@ public class ChatOrchestratorService
                 _logger.LogInformation("[Orchestrator] Ejecutando tool: {Name}({Args})",
                     toolCall.Name, toolCall.Arguments);
 
-                if (toolCall.Name == "check_availability") sawAvailabilityProbe = true;
+                if (toolCall.Name == "check_availability")
+                {
+                    // Guard de código (DP3/RF5): el modelo solo puede re-consultar disponibilidad
+                    // una vez por turno (regla 8.8a). La 2ª re-consulta no se ejecuta; se devuelve
+                    // un resultado de tool que le recuerda el contexto ya provisto y lo desvía a
+                    // informar al cliente o sugerir lista de espera.
+                    if (availabilityReChecks >= MaxAvailabilityReConsults)
+                    {
+                        _logger.LogInformation("[Orchestrator] Re-consulta de disponibilidad {N} bloqueada por el guard (max {Max} por turno, regla 8.8a)",
+                            availabilityReChecks + 1, MaxAvailabilityReConsults);
+                        const string guardResult =
+                            "{\"advertencia\":\"Ya tienes el CONTEXTO DE DISPONIBILIDAD ACTUAL de este turno. No llames check_availability de nuevo. Informa al cliente la disponibilidad ya provista o, si no hay cupos, sugiere la lista de espera (regla 8.8).\"}";
+                        accionesPrevias.Add(ToolActionSummarizer.Summarize(toolCall.Name, guardResult));
+                        messages.Add(new ChatMessage
+                        {
+                            Role = "tool",
+                            ToolCallId = toolCall.Id,
+                            ToolName = toolCall.Name,
+                            Content = guardResult
+                        });
+                        continue;
+                    }
+                    availabilityReChecks++;
+                    sawAvailabilityProbe = true;
+                }
                 if (toolCall.Name == "create_appointment") sawCreateAppointment = true;
 
                 var toolResult = await ExecuteToolAsync(toolCall.Name, toolCall.Arguments, services, tenantId, userId, clientName, accionesPrevias, availabilityReCheckConfirmed, ct);
